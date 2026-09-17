@@ -1,0 +1,10 @@
+# Plantilla multi-host. Ajusta host/puerto/password y ejecuta:
+#   docker compose -f deploy/docker-compose.friction.yml up -d
+#   export SMART_TOKEN_FRICTION_REDIS=redis://:cambia-esto@127.0.0.1:6379/0
+services:
+  friction-redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--requirepass", "cambia-esto"]
+    restart: unless-stopped

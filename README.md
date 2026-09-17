@@ -1,4 +1,4 @@
-# Smart Token Prod v0.7.0
+# Smart Token Prod v0.8.0
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
@@ -7,9 +7,9 @@ aquí Argon2 **endurece la trampa**, no la reemplaza.
 
 ## Qué entrega esta versión
 
-1. **ML-KEM-768** (pqcrypto) — intercambio de clave post-cuántico
-2. **AES-256-GCM** — cifrado autenticado del payload
-3. **Coherencia** — métrica ligada al `master_secret`
+1. **ML-KEM-768** (pqcrypto) — wrap post-cuántico del secreto compartido
+2. **AES-256-GCM** — payload; clave = HKDF(ss, salt=Argon2id(master))
+3. **Binding v2** — `sk` sola no descifra; `.stok` v2 sin oráculo salt/material
 4. **Trampa lógica 1→2→3** — `fail_count` / flags / `recovery_tier` en `friction_snapshot`
 5. **Argon2id + trabajo de trampa** — en **cada** intento (correcto o incorrecto)
 6. **Denegaciones opacas** — CLI/API de deny **no** anuncian tier, fail_count ni work_factor
@@ -83,7 +83,7 @@ smart-token demo   # demo desactiva hang vía _phase3_hang   # demo desactiva ha
 | Garantía | Fuera de alcance |
 |----------|------------------|
 | Confidencialidad ML-KEM + AES-GCM del payload | Canales laterales |
-| Trap state + fail_count persistidos **en un archivo / un proceso** | Fricción multi-instancia sin `FrictionStore` |
+| Trap + fail_count compartidos en el `.stok` (flock) y en `FileFrictionStore` | Réplicas en hosts distintos sin disco/Redis compartido |
 | Deuda de **cómputo / hang** viaja con el `.stok` si se copia *después* de fallar | Bloqueo de **copia limpia pre-ataque** |
 | `sk` en `.stok.key` | HSM/KMS; Android / Termux |
 | Un master correcto siempre puede abrir (pagando el costo una vez) | “Destruir archivo tras N fallos” (**no**) |

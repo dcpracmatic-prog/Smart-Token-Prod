@@ -22,33 +22,62 @@ import base64
 import hashlib
 import json
 import struct
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None  # type: ignore
 
 from .core import (
     SmartTokenProd,
     make_tarpit,
-    coherence_metric,
     derive_aes_key,
     aes_gcm_decrypt,
     mlkem_decaps,
+    friction_mac,
+    BINDING_VERSION,
 )
 from .recovery import (
     apply_failure_to_snapshot,
+    apply_correct_validation,
+    validations_required,
     clear_friction_fields,
     compute_stok_id,
     pay_work_factor,
     work_factor_for_tier,
     phase3_hang_enabled,
     phase3_blocking_grind,
+    trap_should_hang,
     MAX_TIER,
 )
 
 MAGIC = b"STOK"
-VERSION = 1
+VERSION = 2
 KEY_MAGIC = b"STKEY"
 KEY_VERSION = 1
+
+
+@contextmanager
+def exclusive_stok(path: str | Path) -> Iterator[None]:
+    """Réplicas: un solo open_stok escribe fail_count a la vez sobre el mismo .stok."""
+    lock_path = Path(str(path) + ".lock")
+    lock_path.touch(exist_ok=True)
+    fh = open(lock_path, "a+b")
+    try:
+        if fcntl is not None:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if fcntl is not None:
+            try:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            except OSError:
+                pass
+        fh.close()
 
 
 def _b64(data: bytes) -> str:
@@ -80,6 +109,9 @@ class StokFile:
     friction_backend: str = "auto"
     # sk solo presente si se cargó desde un .stok legado o se inyectó en memoria
     sk: Optional[bytes] = None
+    binding_version: int = BINDING_VERSION
+    kdf_params: Dict[str, Any] = field(default_factory=dict)
+    friction_mac: Optional[bytes] = None
 
     def to_dict(self) -> Dict[str, Any]:
         d: Dict[str, Any] = {
@@ -99,7 +131,16 @@ class StokFile:
             "tarpit_mode": self.tarpit_mode,
             "tarpit_seconds": self.tarpit_seconds,
             "friction_backend": self.friction_backend,
+            "binding_version": int(self.binding_version),
+            "kdf_params": dict(self.kdf_params or {}),
         }
+        if self.friction_mac:
+            d["friction_mac"] = _b64(self.friction_mac)
+        # v2: do not persist salt/material as an offline master oracle
+        if int(self.binding_version) >= 2:
+            d["salt"] = ""
+            d["material"] = ""
+            d["target_coherence"] = 0.0
         # Nunca serializar sk al .stok por defecto
         return d
 
@@ -116,15 +157,18 @@ class StokFile:
             ct=_unb64(d["ct"]),
             nonce=_unb64(d["nonce"]),
             ciphertext=_unb64(d["ciphertext"]),
-            salt=_unb64(d["salt"]),
-            material=_unb64(d["material"]),
-            target_coherence=float(d["target_coherence"]),
+            salt=_unb64(d["salt"]) if d.get("salt") else b"",
+            material=_unb64(d["material"]) if d.get("material") else b"",
+            target_coherence=float(d.get("target_coherence") or 0.0),
             aad=_unb64(d["aad"]),
             friction_snapshot=dict(d.get("friction_snapshot") or {}),
             tarpit_mode=d.get("tarpit_mode", "off"),
             tarpit_seconds=float(d.get("tarpit_seconds", 0.0)),
             friction_backend=d.get("friction_backend", "auto"),
             sk=sk,
+            binding_version=int(d.get("binding_version") or d.get("version") or BINDING_VERSION),
+            kdf_params=dict(d.get("kdf_params") or {}),
+            friction_mac=_unb64(d["friction_mac"]) if d.get("friction_mac") else None,
         )
 
 
@@ -200,10 +244,11 @@ def protect_file(
     )
 
     snap = tok.friction_snapshot()
-    snap["stok_id"] = compute_stok_id(tok.pk, tok.ct, public_label)
+    snap["stok_id"] = tok.stok_id
     snap.setdefault("recovery_tier", 0)
     snap.setdefault("work_factor", 1)
     snap.pop("recovery_debt", None)
+    mac = friction_mac(tok.shared_secret, snap, tok.pk, tok.ct)
     stok = StokFile(
         governance_outcomes=governance_outcomes,
         public_label=public_label,
@@ -221,6 +266,9 @@ def protect_file(
         tarpit_seconds=tarpit_seconds,
         friction_backend=friction_backend,
         sk=None,
+        binding_version=tok.binding_version,
+        kdf_params=dict(tok.kdf_params),
+        friction_mac=mac,
     )
     write_stok(stok, output_path)
     write_key_file(tok.sk, key_path)
@@ -240,8 +288,8 @@ def read_stok(path: str | Path) -> StokFile:
     if len(data) < 9 or data[:4] != MAGIC:
         raise ValueError(f"Archivo no es un .stok válido (magic incorrecto): {path}")
     version = data[4]
-    if version != VERSION:
-        raise ValueError(f"Versión de .stok no soportada: {version} (esperada {VERSION})")
+    if version not in (1, 2, VERSION):
+        raise ValueError(f"Versión de .stok no soportada: {version} (esperada 1 o {VERSION})")
     (body_len,) = struct.unpack(">I", data[5:9])
     body = data[9 : 9 + body_len]
     if len(body) != body_len:
@@ -291,6 +339,38 @@ def open_stok(
     Si no hay sk disponible, el intento falla y se registra fricción.
     """
     path = Path(path)
+    with exclusive_stok(path):
+        plaintext, info = _open_stok_body(
+            path=path,
+            master_secret=master_secret,
+            sk=sk,
+            key_path=key_path,
+            provided_salt=provided_salt,
+            provided_material=provided_material,
+            force_failure=force_failure,
+            output_path=output_path,
+            update_friction=update_friction,
+            hang_after_holder=None,
+        )
+    hang = info.pop("_hang", None)
+    if hang:
+        phase3_blocking_grind(**hang)
+    return plaintext, info
+
+
+def _open_stok_body(
+    *,
+    path: Path,
+    master_secret: bytes,
+    sk,
+    key_path,
+    provided_salt,
+    provided_material,
+    force_failure: bool,
+    output_path,
+    update_friction: bool,
+    hang_after_holder,
+):
     stok = read_stok(path)
 
     info: Dict[str, Any] = {
@@ -309,26 +389,6 @@ def open_stok(
     if resolved_sk is None and stok.sk is not None:
         resolved_sk = stok.sk  # legado
 
-    salt = provided_salt if provided_salt is not None else stok.salt
-    material = provided_material if provided_material is not None else stok.material
-
-    expected_salt = hashlib.sha256(master_secret + b"|SALT|" + stok.public_label).digest()[:16]
-    expected_material = hashlib.sha256(master_secret + b"|MATERIAL|" + expected_salt).digest()
-    H = coherence_metric(material, salt)
-    delta = abs(H - stok.target_coherence)
-    ok_coh = delta <= stok.epsilon
-    master_matches = (expected_salt == stok.salt) and (expected_material == stok.material)
-    if provided_salt is None and provided_material is None:
-        ok_coh = ok_coh and master_matches
-
-    info["coherence"] = {
-        "H": round(H, 6),
-        "target": round(stok.target_coherence, 6),
-        "delta": round(delta, 6),
-        "within_window": ok_coh,
-        "master_matches": master_matches,
-    }
-
     ss = None
     if resolved_sk is None:
         info["mlkem_ok"] = False
@@ -341,47 +401,86 @@ def open_stok(
             info["mlkem_ok"] = False
             info["mlkem_error"] = str(e)
 
-    legitimate = ok_coh and info.get("mlkem_ok") and not force_failure
+    # Verify friction MAC when ss is available. Tampered snapshot is untrusted.
+    persisted = dict(stok.friction_snapshot or {})
+    from .persistence import store_from_env, merge_friction
+    _store = store_from_env()
+    _store_id = compute_stok_id(stok.pk, stok.ct, stok.public_label)
+    if _store is not None:
+        persisted = merge_friction(persisted, _store.load(_store_id)) or persisted
+        stok.friction_snapshot = dict(persisted)
+    if ss is not None and stok.friction_mac:
+        expected_mac = friction_mac(ss, persisted, stok.pk, stok.ct)
+        if expected_mac != stok.friction_mac:
+            info["friction_mac_ok"] = False
+            persisted = {}
+            stok.friction_snapshot = {}
+        else:
+            info["friction_mac_ok"] = True
 
     base_key = ss if ss is not None else b"\x00" * 32
     tarpit = _rehydrate_tarpit(stok, base_key)
 
-    stok_id = (stok.friction_snapshot or {}).get("stok_id") or compute_stok_id(
+    stok_id = persisted.get("stok_id") or compute_stok_id(
         stok.pk, stok.ct, stok.public_label
     )
-    import os as _os
-    argon2_time = getattr(open_stok, "_argon2_time_cost", None)
-    argon2_mem = getattr(open_stok, "_argon2_memory_cost", None)
-    if argon2_time is None:
-        argon2_time = int(_os.environ.get("SMART_TOKEN_ARGON2_TIME", "2"))
-    if argon2_mem is None:
-        argon2_mem = int(_os.environ.get("SMART_TOKEN_ARGON2_MEM", str(64 * 1024)))
+    kp = dict(stok.kdf_params or {})
+    argon2_time = int(kp.get("time_cost") or getattr(open_stok, "_argon2_time_cost", 2))
+    argon2_mem = int(kp.get("memory_cost") or getattr(open_stok, "_argon2_memory_cost", 64 * 1024))
+    argon2_par = int(kp.get("parallelism") or 1)
 
-    persisted = dict(stok.friction_snapshot or {})
     cum0 = int(persisted.get("cumulative_iters", 0) or 0)
 
-    # EVERY attempt pays Argon2id + trap work
+    # EVERY attempt pays Argon2id + trap work; output binds AES
     from .recovery import ITERS_PER_ATTEMPT
     info["work_factor_paid"] = 1
     info["hash_iters_paid"] = ITERS_PER_ATTEMPT
     info["cumulative_iters_before"] = cum0
+    info["binding_version"] = int(stok.binding_version)
     hang_on = getattr(open_stok, "_phase3_hang", None)
     if hang_on is None:
         hang_on = phase3_hang_enabled()
-    try:
-        pay_work_factor(
-            stok_id=stok_id,
-            master_secret=master_secret,
-            work_factor=1,
-            time_cost=int(argon2_time),
-            memory_cost=int(argon2_mem),
-        )
-    except ImportError:
-        pass
+    master_km = pay_work_factor(
+        stok_id=stok_id,
+        master_secret=master_secret,
+        work_factor=1,
+        time_cost=int(argon2_time),
+        memory_cost=int(argon2_mem),
+        parallelism=int(argon2_par),
+    )
+
+    plaintext = None
+    decrypt_ok = False
+    if ss is not None and not force_failure:
+        try:
+            key = derive_aes_key(ss, master_km)
+            plaintext = aes_gcm_decrypt(key, stok.nonce, stok.ciphertext, stok.aad)
+            decrypt_ok = True
+            info["aes_gcm_ok"] = True
+        except Exception as e:
+            info["aes_gcm_ok"] = False
+            info["aes_error"] = str(e)
+
+    legitimate = bool(decrypt_ok) and not force_failure
 
     if not legitimate:
-        friction_info = tarpit.register_failure()
-        new_snap = apply_failure_to_snapshot(tarpit.snapshot())
+        if _store is not None:
+            def _mut(current):
+                base = merge_friction(persisted, current) or {}
+                if hasattr(tarpit, "restore_snapshot"):
+                    tarpit.restore_snapshot(base)
+                tarpit.register_failure()
+                snap = apply_failure_to_snapshot(tarpit.snapshot())
+                snap["stok_id"] = stok_id
+                snap["validations_ok"] = 0
+                snap["validations_required"] = validations_required(int(snap.get("fail_count", 0) or 0))
+                snap.pop("recovery_debt", None)
+                return snap
+            new_snap = _store.locked_update(_store_id, _mut) or {}
+            friction_info = {"fail_count": new_snap.get("fail_count"), "action": "shared_store"}
+        else:
+            friction_info = tarpit.register_failure()
+            new_snap = apply_failure_to_snapshot(tarpit.snapshot())
         if hasattr(tarpit, "state"):
             tarpit.state.recovery_tier = int(new_snap["recovery_tier"])
             if hasattr(tarpit.state, "work_factor"):
@@ -394,6 +493,8 @@ def open_stok(
             if hasattr(tarpit, "_cumulative_iters"):
                 tarpit._cumulative_iters = int(new_snap.get("cumulative_iters", 0) or 0)
         new_snap["stok_id"] = stok_id
+        new_snap["validations_ok"] = 0
+        new_snap["validations_required"] = validations_required(int(new_snap.get("fail_count", 0) or 0))
         new_snap.pop("recovery_debt", None)
         info["friction"] = friction_info
         info["friction_state"] = new_snap
@@ -405,65 +506,63 @@ def open_stok(
         # Persist castigated state FIRST, then hang if phase 3 / tier≥3
         if update_friction:
             stok.friction_snapshot = new_snap
+            if ss is not None:
+                stok.friction_mac = friction_mac(ss, new_snap, stok.pk, stok.ct)
             write_stok(stok, path)
+            if _store is not None:
+                _store.save(_store_id, new_snap)
 
-        if int(new_snap.get("recovery_tier", 0) or 0) >= MAX_TIER and hang_on:
-            phase3_blocking_grind(
-                stok_id=stok_id,
-                master_secret=master_secret,
-                time_cost=int(argon2_time),
-                memory_cost=int(argon2_mem),
-            )
+        if trap_should_hang(new_snap) and hang_on:
+            info["_hang"] = {
+                "stok_id": stok_id,
+                "master_secret": master_secret,
+                "time_cost": int(argon2_time),
+                "memory_cost": int(argon2_mem),
+            }
         return None, info
 
-    # Correct master at any tier (incl. ≥3): OPEN + reset (file never destroyed)
-    tarpit.reset()
-    key = derive_aes_key(ss)
-    try:
-        plaintext = aes_gcm_decrypt(key, stok.nonce, stok.ciphertext, stok.aad)
-        cleared = clear_friction_fields(tarpit.snapshot())
-        cleared["stok_id"] = stok_id
-        cleared["work_factor"] = 1
-        cleared["recovery_tier"] = 0
-        cleared["cumulative_iters"] = 0
-        info["aes_gcm_ok"] = True
-        info["payload_len"] = len(plaintext)
-        info["friction_state"] = cleared
-        info["status"] = "OPEN"
-        info["work_factor"] = 1
-        info["recoverable"] = True
-
-        if update_friction:
-            stok.friction_snapshot = cleared
-            write_stok(stok, path)
-
-        if output_path is not None:
-            Path(output_path).write_bytes(plaintext)
-
-        return plaintext, info
-    except Exception as e:
-        info["aes_gcm_ok"] = False
-        info["aes_error"] = str(e)
+    # Correct master: accumulate validations. N fails → N+1 correct (cap 4).
+    current = dict(stok.friction_snapshot or {})
+    current.setdefault("fail_count", int((tarpit.snapshot() or {}).get("fail_count", 0)))
+    progressed = apply_correct_validation(current)
+    progressed["stok_id"] = stok_id
+    if not progressed.get("ready_to_open"):
         info["status"] = "DENIED"
         info["recoverable"] = False
-        friction_info = tarpit.register_failure()
-        new_snap = apply_failure_to_snapshot(tarpit.snapshot())
-        new_snap["stok_id"] = stok_id
-        new_snap.pop("recovery_debt", None)
-        info["friction"] = friction_info
-        info["friction_state"] = new_snap
-        info["work_factor"] = int(new_snap.get("work_factor", 1))
+        info["friction_state"] = progressed
         if update_friction:
-            stok.friction_snapshot = new_snap
+            stok.friction_snapshot = progressed
+            if ss is not None:
+                stok.friction_mac = friction_mac(ss, progressed, stok.pk, stok.ct)
             write_stok(stok, path)
-        if int(new_snap.get("recovery_tier", 0) or 0) >= MAX_TIER and hang_on:
-            phase3_blocking_grind(
-                stok_id=stok_id,
-                master_secret=master_secret,
-                time_cost=int(argon2_time),
-                memory_cost=int(argon2_mem),
-            )
+            if _store is not None:
+                _store.save(_store_id, progressed)
         return None, info
+
+    tarpit.reset()
+    cleared = clear_friction_fields(tarpit.snapshot())
+    cleared["stok_id"] = stok_id
+    cleared["work_factor"] = 1
+    cleared["recovery_tier"] = 0
+    cleared["cumulative_iters"] = 0
+    info["payload_len"] = len(plaintext)
+    info["friction_state"] = cleared
+    info["status"] = "OPEN"
+    info["work_factor"] = 1
+    info["recoverable"] = True
+
+    if update_friction:
+        stok.friction_snapshot = cleared
+        if ss is not None:
+            stok.friction_mac = friction_mac(ss, cleared, stok.pk, stok.ct)
+        write_stok(stok, path)
+        if _store is not None:
+            _store.clear(_store_id)
+
+    if output_path is not None:
+        Path(output_path).write_bytes(plaintext)
+
+    return plaintext, info
 
 
 

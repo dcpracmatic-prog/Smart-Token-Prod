@@ -212,7 +212,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
                 update_friction=True,
             )
             elapsed = time.perf_counter() - t0
-            print(f"   Fallo {i}: DENIED (opaque) — {elapsed:.3f}s")
+            print(f"   Intento: DENIED — {elapsed:.3f}s")
             assert info.get("status") == "DENIED"
     finally:
         if prev_hang is None:
@@ -229,17 +229,22 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
     print()
     print("=" * 60)
-    print("4. Master correcto tras escalada → OPEN + reset")
+    print("4. Recuperación: 3 fallos exigen 4 validaciones correctas")
     print("=" * 60)
-    t0 = time.perf_counter()
-    pt, info = open_stok(
-        stok_path,
-        master_secret=master,
-        key_path=key_path,
-        output_path=recovered,
-        update_friction=True,
-    )
-    elapsed = time.perf_counter() - t0
+    last = None
+    for i in range(4):
+        t0 = time.perf_counter()
+        pt, info = open_stok(
+            stok_path,
+            master_secret=master,
+            key_path=key_path,
+            output_path=recovered,
+            update_friction=True,
+        )
+        elapsed = time.perf_counter() - t0
+        last = (pt, info, elapsed)
+        print(f"   Validación {i+1}/4 → {info.get('status')} ({elapsed:.3f}s)")
+    pt, info, elapsed = last
     assert pt is not None and pt == sample.read_bytes()
     print(f"   status={info.get('status')} pt={len(pt)}B tiempo={elapsed:.3f}s")
     print(f"   Escrito: {recovered}")

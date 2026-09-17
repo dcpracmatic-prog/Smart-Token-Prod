@@ -19,7 +19,7 @@ import pytest
 from smart_token_prod import SmartTokenProd
 from smart_token_prod.core import coherence_metric, governance_fingerprint
 from smart_token_prod.native import is_available as native_is_available, native_coherence_metric
-from smart_token_prod.persistence import InMemoryFrictionStore, PersistentTarpit
+from smart_token_prod.persistence import InMemoryFrictionStore, PersistentTarpit, FileFrictionStore
 from smart_token_prod.keymgmt import InMemoryKeyProvider
 from smart_token_prod import stok as stok_mod
 from smart_token_prod.core import SmartTokenProd as STPClass
@@ -31,15 +31,23 @@ GOVERNANCE = [0, 0, 0, 1, 0, 1, 1, 1]
 @pytest.fixture(autouse=True)
 def _fast_argon2_and_no_hang():
     """Fast Argon2 for tests; disable phase-3 hang except hang-specific tests."""
+    os.environ["SMART_TOKEN_ARGON2_TIME"] = "1"
+    os.environ["SMART_TOKEN_ARGON2_MEM"] = str(8 * 1024)
     stok_mod.open_stok._argon2_time_cost = 1
     stok_mod.open_stok._argon2_memory_cost = 8 * 1024
     stok_mod.open_stok._phase3_hang = False
     STPClass.open._argon2_time_cost = 1
     STPClass.open._argon2_memory_cost = 8 * 1024
     STPClass.open._phase3_hang = False
+    STPClass._argon2_time_cost = 1
+    STPClass._argon2_memory_cost = 8 * 1024
     yield
-    for obj in (stok_mod.open_stok, STPClass.open):
+    os.environ.pop("SMART_TOKEN_ARGON2_TIME", None)
+    os.environ.pop("SMART_TOKEN_ARGON2_MEM", None)
+    for obj in (stok_mod.open_stok, STPClass.open, STPClass):
         for attr in ("_argon2_time_cost", "_argon2_memory_cost", "_phase3_hang"):
+            if obj is STPClass and attr == "_phase3_hang":
+                continue
             if hasattr(obj, attr):
                 delattr(obj, attr)
 
@@ -108,7 +116,7 @@ def test_friction_phases_escalate_silently_in_snapshot(backend):
 
 
 def test_one_correct_open_after_tier3_works():
-    """Correct master at tier≥3 pays once → OPEN + reset (not permanently stuck)."""
+    """After ≥3 fails the trap reverts only after 4 consecutive correct validations."""
     tok = SmartTokenProd(
         GOVERNANCE, b"secret-payload", b"master",
         tarpit_mode="off", tarpit_seconds=0.0, friction_backend="python",
@@ -118,6 +126,9 @@ def test_one_correct_open_after_tier3_works():
     assert tok.friction_snapshot()["recovery_tier"] == 3
     assert tok.friction_snapshot()["cumulative_iters"] == 40_000
 
+    for i in range(3):
+        pt, info = tok.open()
+        assert pt is None and info["status"] == "DENIED"
     pt, info = tok.open()
     assert pt == b"secret-payload"
     assert info["status"] == "OPEN"
@@ -179,6 +190,18 @@ def test_persistent_tarpit_restores_fail_count_across_instances():
     assert tarpit_a.snapshot()["fail_count"] == 2
     tarpit_b = PersistentTarpit(SequentialTarpit(key, "off", 0.0), store, identity="user-1")
     assert tarpit_b.snapshot()["fail_count"] == 2
+
+
+def test_file_store_serializes_failures(tmp_path):
+    from smart_token_prod.core import SequentialTarpit
+    from smart_token_prod.persistence import FileFrictionStore
+
+    store = FileFrictionStore(tmp_path / "fric")
+    key = hashlib.sha256(b"shared").digest()
+    PersistentTarpit(SequentialTarpit(key, "off", 0.0), store, "id-x").register_failure()
+    PersistentTarpit(SequentialTarpit(key, "off", 0.0), store, "id-x").register_failure()
+    PersistentTarpit(SequentialTarpit(key, "off", 0.0), store, "id-x").register_failure()
+    assert store.load("id-x")["fail_count"] == 3
 
 
 def test_inmemory_key_provider_reuses_keypair_for_same_id():
@@ -276,10 +299,18 @@ def test_stok_one_correct_after_tier3_opens(tmp_path):
     assert friction_status(stok_path)["cumulative_iters"] == 40_000
     assert stok_path.exists()  # never destroyed
 
-    pt, info = open_stok(
-        stok_path, master_secret=master, key_path=key_path,
-        output_path=out, update_friction=True,
-    )
+    denied = 0
+    pt, info = None, {}
+    for _ in range(4):
+        pt, info = open_stok(
+            stok_path, master_secret=master, key_path=key_path,
+            output_path=out, update_friction=True,
+        )
+        if info["status"] == "OPEN":
+            break
+        denied += 1
+        assert pt is None
+    assert denied == 3
     assert info["status"] == "OPEN"
     assert info["work_factor_paid"] == 1
     assert pt == sample.read_bytes()
@@ -300,6 +331,10 @@ def test_stok_no_auth_partial_status(tmp_path):
     )
     open_stok(stok_path, master_secret=b"w1", key_path=key_path)
     open_stok(stok_path, master_secret=b"w2", key_path=key_path)
+    # 2 fails → 3 correct validations required
+    for _ in range(2):
+        pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+        assert info["status"] == "DENIED" and pt is None
     pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
     assert info["status"] == "OPEN"
     assert pt == b"payload-d"
@@ -326,6 +361,9 @@ def test_stok_persistence_across_reopen(tmp_path):
     assert stok.friction_snapshot["recovery_tier"] == 3
     assert friction_status(stok_path)["recovery_tier"] == 3
 
+    for _ in range(3):
+        pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+        assert info["status"] == "DENIED"
     pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
     assert info["status"] == "OPEN"
     assert info["work_factor_paid"] == 1
@@ -397,10 +435,10 @@ def test_wrong_open_at_tier3_hangs_in_subprocess(tmp_path):
     stok_path, key_path = protect_file(
         sample, master_secret=master, tarpit_mode="off", tarpit_seconds=0.0, friction_backend="python"
     )
-    # Escalate to tier 3 with hang disabled (autouse fixture)
-    for i in range(4):
+    # Two fails in parent (hang off). Third fail in child engages ∞ trap.
+    for i in range(2):
         open_stok(stok_path, master_secret=b"bad-" + str(i).encode(), key_path=key_path)
-    assert friction_status(stok_path)["recovery_tier"] == 3
+    assert friction_status(stok_path)["friction_snapshot"]["fail_count"] == 2
     assert stok_path.exists()
 
     ready = multiprocessing.Queue()
@@ -426,7 +464,7 @@ def test_wrong_open_at_tier3_hangs_in_subprocess(tmp_path):
     # Castigated .stok still present after kill
     assert stok_path.exists()
     snap = read_stok(stok_path).friction_snapshot
-    assert int(snap.get("recovery_tier", 0)) >= 3
+    assert int(snap.get("fail_count", 0)) == 3
 
 
 def test_cli_denied_is_opaque(tmp_path, capsys):
@@ -513,3 +551,113 @@ def test_off_mode_skips_cpu_burn():
     assert time.perf_counter() - t0 < 0.2
     assert info["action"] == "tarpit_labels_only"
     assert t.snapshot()["tarpit_triggered"] is True
+
+
+def test_sk_alone_cannot_derive_aes_key():
+    """Binding v2: ss without master_km must not yield the payload key."""
+    from smart_token_prod.core import derive_aes_key
+    with pytest.raises(ValueError):
+        derive_aes_key(b"\x00" * 32, b"")
+
+
+def test_wrong_master_cannot_decrypt_even_with_sk(tmp_path):
+    from smart_token_prod.stok import protect_file, open_stok, read_stok
+    from smart_token_prod.core import derive_aes_key, aes_gcm_decrypt, mlkem_decaps
+    from smart_token_prod.recovery import pay_work_factor, compute_stok_id
+
+    sample = tmp_path / "bind.stl"
+    sample.write_bytes(b"bound-payload")
+    master = b"correct-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", tarpit_seconds=0.0, friction_backend="python"
+    )
+    stok = read_stok(stok_path)
+    assert stok.binding_version >= 2
+    assert not stok.salt and not stok.material
+    assert stok.kdf_params.get("time_cost")
+    assert stok.friction_mac
+
+    sk = stok_mod.read_key_file(key_path) if hasattr(stok_mod, "read_key_file") else None
+    from smart_token_prod.stok import read_key_file
+    sk = read_key_file(key_path)
+    ss = mlkem_decaps(sk, stok.ct)
+    kp = stok.kdf_params
+    wrong_km = pay_work_factor(
+        stok_id=compute_stok_id(stok.pk, stok.ct, stok.public_label),
+        master_secret=b"wrong-master",
+        time_cost=int(kp["time_cost"]),
+        memory_cost=int(kp["memory_cost"]),
+        parallelism=int(kp.get("parallelism", 1)),
+        hash_iters=10_000,
+    )
+    wrong_key = derive_aes_key(ss, wrong_km)
+    with pytest.raises(Exception):
+        aes_gcm_decrypt(wrong_key, stok.nonce, stok.ciphertext, stok.aad)
+
+    pt, info = open_stok(stok_path, master_secret=b"wrong-master", key_path=key_path)
+    assert pt is None and info["status"] == "DENIED"
+    pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+    assert pt is None and info["status"] == "DENIED"
+    pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+    assert pt == b"bound-payload" and info["status"] == "OPEN"
+
+
+def test_v2_stok_has_no_offline_master_oracle(tmp_path):
+    from smart_token_prod.stok import protect_file, read_stok
+
+    sample = tmp_path / "oracle.stl"
+    sample.write_bytes(b"x")
+    stok_path, _ = protect_file(
+        sample, master_secret=b"secret-human", tarpit_mode="off", friction_backend="python"
+    )
+    raw = read_stok(stok_path)
+    assert raw.salt == b""
+    assert raw.material == b""
+    body = stok_path.read_bytes()
+    assert b"secret-human" not in body
+
+
+def test_validation_ladder_1_2_3_fails(tmp_path):
+    """1 fail→2 oks; 2 fails→3 oks; 3 fails→4 oks. Deny stays opaque."""
+    from smart_token_prod.stok import protect_file, open_stok
+    from smart_token_prod.cli import main
+
+    sample = tmp_path / "ladder.stl"
+    sample.write_bytes(b"ladder-payload")
+    master = b"ladder-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+
+    def deny_wrong():
+        pt, info = open_stok(stok_path, master_secret=b"nope", key_path=key_path)
+        assert pt is None and info["status"] == "DENIED"
+
+    def try_ok():
+        return open_stok(stok_path, master_secret=master, key_path=key_path)
+
+    deny_wrong()
+    pt, info = try_ok()
+    assert info["status"] == "DENIED" and pt is None
+    pt, info = try_ok()
+    assert info["status"] == "OPEN" and pt == b"ladder-payload"
+
+    deny_wrong()
+    deny_wrong()
+    assert try_ok()[1]["status"] == "DENIED"
+    assert try_ok()[1]["status"] == "DENIED"
+    pt, info = try_ok()
+    assert info["status"] == "OPEN" and pt == b"ladder-payload"
+
+    for _ in range(3):
+        deny_wrong()
+    for _ in range(3):
+        assert try_ok()[1]["status"] == "DENIED"
+    pt, info = try_ok()
+    assert info["status"] == "OPEN" and pt == b"ladder-payload"
+
+    rc = main([
+        "open", str(stok_path), "--master", "wrong", "--key", str(key_path),
+        "--backend", "python", "--tarpit-mode", "off",
+    ])
+    assert rc == 1

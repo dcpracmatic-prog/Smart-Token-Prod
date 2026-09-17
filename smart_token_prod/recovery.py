@@ -36,6 +36,7 @@ from typing import Any, Dict, Tuple
 ITERS_PER_ATTEMPT = 10_000
 JUMP_EVERY = 11_000
 MAX_TIER = 3
+MAX_VALIDATIONS_REQUIRED = 4
 
 DEFAULT_TIME_COST = 2
 DEFAULT_MEMORY_COST = 64 * 1024  # KiB
@@ -66,6 +67,28 @@ def compute_stok_id(pk: bytes, ct: bytes, public_label: bytes = b"") -> str:
     return h[:32]
 
 
+def validations_required(fail_count: int) -> int:
+    """Owner recovery: N failures require N+1 consecutive correct validations (cap 4).
+
+    fail 0 → 1, fail 1 → 2, fail 2 → 3, fail ≥3 / trap → 4.
+    """
+    fc = max(int(fail_count or 0), 0)
+    if fc <= 0:
+        return 1
+    return min(fc + 1, MAX_VALIDATIONS_REQUIRED)
+
+
+def apply_correct_validation(snap: Dict[str, Any]) -> Dict[str, Any]:
+    """Record one correct master presentation. Does not reset the trap."""
+    out = dict(snap or {})
+    need = validations_required(int(out.get("fail_count", 0) or 0))
+    ok = int(out.get("validations_ok", 0) or 0) + 1
+    out["validations_ok"] = ok
+    out["validations_required"] = need
+    out["ready_to_open"] = ok >= need
+    return out
+
+
 def apply_failure_to_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
     """
     After fail_count was incremented: sync cumulative_iters + recovery_tier.
@@ -82,6 +105,9 @@ def apply_failure_to_snapshot(snap: Dict[str, Any]) -> Dict[str, Any]:
     prev_tier = int(out.get("recovery_tier", 0) or 0)
     out["recovery_tier"] = max(prev_tier, new_tier)
     out["work_factor"] = work_factor_for_tier(out["recovery_tier"])
+    out["validations_ok"] = 0
+    out["validations_required"] = validations_required(fc)
+    out["ready_to_open"] = False
     out.pop("recovery_debt", None)
     return out
 
@@ -96,6 +122,9 @@ def clear_friction_fields(snap: Dict[str, Any]) -> Dict[str, Any]:
     out["recovery_tier"] = 0
     out["work_factor"] = 1
     out["cumulative_iters"] = 0
+    out["validations_ok"] = 0
+    out["validations_required"] = 1
+    out["ready_to_open"] = True
     out.pop("recovery_debt", None)
     return out
 
@@ -106,6 +135,15 @@ def _base_argon2_params() -> Tuple[int, int, int]:
     memory_cost = int(os.environ.get("SMART_TOKEN_ARGON2_MEM", str(DEFAULT_MEMORY_COST)))
     parallelism = int(os.environ.get("SMART_TOKEN_ARGON2_PARALLELISM", str(DEFAULT_PARALLELISM)))
     return time_cost, memory_cost, parallelism
+
+
+def trap_should_hang(snap: Dict[str, Any] | None) -> bool:
+    """Logical trap: after fail_count reaches 3 the next grind does not return.
+
+    The snapshot is persisted at state 3 first; the process then hangs.
+    Killing it leaves the .stok at estado 3 (4 correct validations to OPEN).
+    """
+    return int((snap or {}).get("fail_count", 0) or 0) >= 3
 
 
 def phase3_hang_enabled() -> bool:
@@ -167,13 +205,6 @@ def pay_work_factor(
     `work_factor` is accepted for API back-compat but does NOT multiply Argon2
     rounds (always a single Argon2id call per pay).
     """
-    try:
-        from argon2.low_level import Type, hash_secret_raw
-    except ImportError as e:
-        raise ImportError(
-            "argon2-cffi is required (pip install argon2-cffi)"
-        ) from e
-
     base_t, base_m, base_p = _base_argon2_params()
     t = int(time_cost if time_cost is not None else base_t)
     m = int(memory_cost if memory_cost is not None else base_m)
@@ -184,6 +215,10 @@ def pay_work_factor(
     salt = hashlib.sha256(
         stok_id.encode("ascii") + b"|eq-argon2|v1"
     ).digest()[:16]
+    try:
+        from argon2.low_level import Type, hash_secret_raw
+    except ImportError as e:
+        raise ImportError("argon2-cffi is required: pip install argon2-cffi") from e
     argon_out = hash_secret_raw(
         secret=master_secret,
         salt=salt,

@@ -26,11 +26,12 @@ antes de confiar en el sistema.
   en la máquina donde vive `sk`, el token no ofrece ninguna protección — la
   clave secreta está en memoria de proceso sin cifrar (ver `keymgmt.py`,
   sección de gestión de claves).
-- **Ataques distribuidos multi-instancia**: sin un `FrictionStore`
-  compartido (ver `persistence.py`), un atacante puede repartir intentos
-  entre réplicas/workers y nunca disparar el tarpit. Persistencia compartida
-  es necesaria, no opcional, para el reclamo de "resistencia a fuerza
-  bruta" en un despliegue real.
+- **Ataques distribuidos multi-host sin store común**: en un solo host (o
+  NFS/disco compartido) `FileFrictionStore` + lock de `.stok` hacen que N
+  workers sumen al **mismo** `fail_count`. Comprobado con
+  `scripts/validate_replicas.py`. Réplicas en máquinas distintas siguen
+  necesitando Redis (`RedisFrictionStore`) u otro store de red; si cada
+  host tiene su propio disco, el atacante otra vez parte los intentos.
 - **Denegación de servicio (DoS) propia**: el tarpit de CPU consume ciclos
   del *servidor*, no solo del atacante. A volumen suficiente de intentos
   fallidos concurrentes, el propio mecanismo defensivo puede degradar el

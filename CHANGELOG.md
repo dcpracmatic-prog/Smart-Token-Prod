@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.8.2 — FrictionStore compartido (réplicas)
+
+- `FileFrictionStore` + `flock`: un fail_count por identidad en disco.
+- `open_stok` toma lock exclusivo sobre `archivo.stok.lock` durante
+  lectura/escritura; el hang de estado 3 ocurre *después* de soltar el lock
+  para que otras réplicas vean el estado 3.
+- `PersistentTarpit` rehidrata con `restore_snapshot` (no re-ejecuta fallos)
+  y incrementa bajo `locked_update`.
+- Comprobar: `scripts/validate_replicas.py` (3 procesos → fail_count=3).
+
+## v0.8.1 — Validation ladder + no sandbox fallbacks
+
+- After N failures, OPEN requires N+1 consecutive correct masters (cap 4).
+- Partial correct validations stay DENIED (opaque).
+- Removed FAKEKEM and PBKDF2 fallbacks; pqcrypto and argon2-cffi are required.
+- Phase-3 hang stays ON by default.
+
+## v0.8.0 — Binding ML-KEM ↔ master ↔ payload (design debt)
+
+- AES-256 key is now `HKDF-SHA-256(ikm=ss, salt=master_km)` where `master_km`
+  is the Argon2id + trap-iter output of the human secret. Possession of
+  `.stok.key` (`sk`) is no longer sufficient to decrypt.
+- `.stok` format v2: `kdf_params` persisted so protect/open share Argon2
+  costs; `friction_mac` HMAC-SHA-256 over the snapshot (keyed by `ss`).
+- `salt` / `material` are **not** written in v2 (removed offline master oracle).
+- Coherence remains a public-view metric, not an authorization check.
+- Tests: `test_wrong_master_cannot_decrypt_even_with_sk`,
+  `test_v2_stok_has_no_offline_master_oracle`, `test_sk_alone_cannot_derive_aes_key`.
+- Remaining (documented): a holder of `sk` can still re-MAC a reset snapshot
+  and skip the official tarpit; they cannot obtain plaintext without master.
+
 ## v0.7.0 — Logical trap + Argon2 harden (opaque deny, phase-3 hang)
 
 - **Product direction**: Argon2+AES alone is commodity; the **logical trap

@@ -8,6 +8,7 @@ Smart Token Production Prototype
 
 from __future__ import annotations
 import hashlib
+import json as json_mod
 import os
 import time
 from dataclasses import dataclass
@@ -15,6 +16,8 @@ from typing import List, Dict, Optional, Tuple, Any
 import numpy as np
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+from cryptography.hazmat.primitives import hashes, hmac as crypto_hmac
 
 from . import native as _native
 
@@ -23,8 +26,10 @@ from . import native as _native
 # ---------------------------------------------------------------------------
 try:
     from pqcrypto.kem.ml_kem_768 import keygen as pq_keygen, encaps as pq_encaps, decaps as pq_decaps
+    PQCRYPTO_AVAILABLE = True
 except ImportError as e:
-    raise ImportError("pip install pqcrypto") from e
+    PQCRYPTO_AVAILABLE = False
+    raise ImportError("pqcrypto is required: pip install pqcrypto") from e
 
 def mlkem_keygen():
     return pq_keygen()
@@ -69,9 +74,62 @@ def coherence_metric(material: bytes, salt: bytes) -> float:
 # ---------------------------------------------------------------------------
 # AES-256-GCM helpers
 # ---------------------------------------------------------------------------
-def derive_aes_key(shared_secret: bytes, info: bytes = b"SMART-TOKEN-AES") -> bytes:
-    """HKDF-like derivation: SHA-256(ss || info) -> 32 bytes."""
-    return hashlib.sha256(shared_secret + info).digest()
+BINDING_VERSION = 2
+HKDF_INFO_AES = b"SMART-TOKEN-AES-v2"
+HKDF_INFO_FRICTION_MAC = b"SMART-TOKEN-FRICTION-MAC-v2"
+
+
+def hkdf_sha256(ikm: bytes, *, salt: bytes, info: bytes, length: int = 32) -> bytes:
+    """HKDF-SHA-256. `salt` and `info` bind independent contexts."""
+    return HKDF(algorithm=hashes.SHA256(), length=length, salt=salt, info=info).derive(ikm)
+
+
+def derive_aes_key(shared_secret: bytes, master_km: bytes, info: bytes = HKDF_INFO_AES) -> bytes:
+    """AES-256 key bound to ML-KEM shared secret AND master work material.
+
+    Without `master_km` (Argon2id + trap iters over the human secret) the
+    payload key cannot be reconstructed from `sk` / `ss` alone.
+    """
+    if not master_km:
+        raise ValueError("derive_aes_key requires master_km (binding v2)")
+    return hkdf_sha256(shared_secret, salt=master_km, info=info, length=32)
+
+
+def derive_friction_mac_key(shared_secret: bytes) -> bytes:
+    """MAC key for the friction snapshot. Derived from ss only so a failed
+    master attempt can still persist castigated state when `sk` is present.
+    Possession of `sk` can reset friction; it cannot open the payload.
+    """
+    return hkdf_sha256(
+        shared_secret,
+        salt=b"stp-friction-mac-v2",
+        info=HKDF_INFO_FRICTION_MAC,
+        length=32,
+    )
+
+
+def friction_mac(shared_secret: bytes, snapshot: Dict[str, Any], pk: bytes, ct: bytes) -> bytes:
+    key = derive_friction_mac_key(shared_secret)
+    body = json_dumps_canonical(snapshot) + b"|" + pk + b"|" + ct
+    h = crypto_hmac.HMAC(key, hashes.SHA256())
+    h.update(body)
+    return h.finalize()
+
+
+def json_dumps_canonical(obj: Dict[str, Any]) -> bytes:
+    return json_mod.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+
+
+# ---------------------------------------------------------------------------
+# Argon2 / KDF parameter helpers (must match between protect and open)
+# ---------------------------------------------------------------------------
+def resolve_argon2_params(time_cost=None, memory_cost=None, parallelism=None) -> Tuple[int, int, int]:
+    from .recovery import _base_argon2_params
+    bt, bm, bp = _base_argon2_params()
+    t = int(time_cost if time_cost is not None else bt)
+    m = int(memory_cost if memory_cost is not None else bm)
+    p = int(parallelism if parallelism is not None else bp)
+    return t, m, p
 
 def aes_gcm_encrypt(key: bytes, plaintext: bytes, aad: bytes = b"") -> Tuple[bytes, bytes]:
     """Returns (nonce, ciphertext_with_tag). nonce is 12 bytes."""
@@ -256,18 +314,39 @@ class SmartTokenProd:
         # ML-KEM
         self.pk, self.sk = mlkem_keygen()
         self.shared_secret, self.ct = mlkem_encaps(self.pk)
+        self._master_secret = master_secret
+        self.binding_version = BINDING_VERSION
+        self._validations_ok = 0
 
-        # AES-256-GCM
-        self.aes_key = derive_aes_key(self.shared_secret)
-        aad = public_label + b"|AAD"
+        from .recovery import compute_stok_id, pay_work_factor
+        self.stok_id = compute_stok_id(self.pk, self.ct, public_label)
+        t_cost = getattr(SmartTokenProd, "_argon2_time_cost", None)
+        m_cost = getattr(SmartTokenProd, "_argon2_memory_cost", None)
+        self.kdf_params = {
+            "time_cost": resolve_argon2_params(t_cost, m_cost, None)[0],
+            "memory_cost": resolve_argon2_params(t_cost, m_cost, None)[1],
+            "parallelism": resolve_argon2_params(t_cost, m_cost, None)[2],
+        }
+        master_km = pay_work_factor(
+            stok_id=self.stok_id,
+            master_secret=master_secret,
+            work_factor=1,
+            time_cost=int(self.kdf_params["time_cost"]),
+            memory_cost=int(self.kdf_params["memory_cost"]),
+            parallelism=int(self.kdf_params["parallelism"]),
+        )
+
+        # AES-256-GCM bound to ss + master_km
+        self.aes_key = derive_aes_key(self.shared_secret, master_km)
+        aad = public_label + b"|AAD|v2"
         self.nonce, self.ciphertext = aes_gcm_encrypt(self.aes_key, secret_payload, aad)
         self._aad = aad
 
-        # Coherence
-        self._master_secret = master_secret
-        self.salt = hashlib.sha256(master_secret + b"|SALT|" + public_label).digest()[:16]
-        self.material = hashlib.sha256(master_secret + b"|MATERIAL|" + self.salt).digest()
-        self.target_coherence = coherence_metric(self.material, self.salt)
+        # Coherence is a public-view metric only — not an authorization oracle.
+        # salt/material are NOT persisted in .stok v2.
+        self.salt = b""
+        self.material = b""
+        self.target_coherence = 0.0
 
         # Friction (usa el núcleo C++ vía FFI si está disponible; cae a Python si no)
         self.friction_backend = friction_backend
@@ -300,8 +379,7 @@ class SmartTokenProd:
         force_failure: bool = False,
     ) -> Tuple[Optional[bytes], Dict]:
         info: Dict[str, Any] = {}
-        ok_coh, coh_info = self._check_coherence(provided_salt, provided_material)
-        info.update(coh_info)
+        info["binding_version"] = self.binding_version
 
         try:
             ss = mlkem_decaps(self.sk, self.ct)
@@ -311,40 +389,57 @@ class SmartTokenProd:
             info["mlkem_error"] = str(e)
             ss = None
 
-        legitimate = ok_coh and info.get("mlkem_ok") and not force_failure
-
-        # Every attempt pays Argon2id + trap work BEFORE result
+        # Every attempt pays Argon2id + trap work BEFORE result.
+        # The same output is the master_km that binds AES.
         from .recovery import (
             pay_work_factor,
             compute_stok_id,
             apply_failure_to_snapshot,
+            apply_correct_validation,
+            trap_should_hang,
             ITERS_PER_ATTEMPT,
             MAX_TIER,
-            _base_argon2_params,
             phase3_hang_enabled,
             phase3_blocking_grind,
         )
         snap0 = self.friction_snapshot()
-        tier0 = int(snap0.get("recovery_tier", 0) or 0)
-        stok_id = compute_stok_id(self.pk, self.ct, self.public_label)
+        stok_id = getattr(self, "stok_id", None) or compute_stok_id(self.pk, self.ct, self.public_label)
         info["work_factor_paid"] = 1
         info["hash_iters_paid"] = ITERS_PER_ATTEMPT
         info["cumulative_iters_before"] = int(snap0.get("cumulative_iters", 0) or 0)
-        t_cost, m_cost, _p = _base_argon2_params()
+        t_cost = int(self.kdf_params["time_cost"])
+        m_cost = int(self.kdf_params["memory_cost"])
+        p_cost = int(self.kdf_params.get("parallelism", 1))
         t_cost = getattr(SmartTokenProd.open, "_argon2_time_cost", t_cost)
         m_cost = getattr(SmartTokenProd.open, "_argon2_memory_cost", m_cost)
         hang_on = getattr(SmartTokenProd.open, "_phase3_hang", None)
         if hang_on is None:
             hang_on = phase3_hang_enabled()
-        pay_work_factor(
+        master_km = pay_work_factor(
             stok_id=stok_id,
             master_secret=self._master_secret,
             work_factor=1,
             time_cost=int(t_cost),
             memory_cost=int(m_cost),
+            parallelism=int(p_cost),
         )
 
+        plaintext = None
+        decrypt_ok = False
+        if ss is not None and not force_failure:
+            try:
+                key = derive_aes_key(ss, master_km)
+                plaintext = aes_gcm_decrypt(key, self.nonce, self.ciphertext, self._aad)
+                decrypt_ok = True
+                info["aes_gcm_ok"] = True
+            except Exception as e:
+                info["aes_gcm_ok"] = False
+                info["aes_error"] = str(e)
+
+        legitimate = bool(decrypt_ok) and not force_failure
+
         if not legitimate:
+            self._validations_ok = 0
             friction_info = self.tarpit.register_failure()
             if hasattr(self.tarpit, "state"):
                 synced = apply_failure_to_snapshot(self.tarpit.snapshot())
@@ -362,7 +457,7 @@ class SmartTokenProd:
             info["status"] = "DENIED"
             info["recoverable"] = False
             # Phase 3 / tier≥3: silent non-returning grind (opaque — no tier leak)
-            if int(fr.get("recovery_tier", 0) or 0) >= MAX_TIER and hang_on:
+            if trap_should_hang(fr) and hang_on:
                 phase3_blocking_grind(
                     stok_id=stok_id,
                     master_secret=self._master_secret,
@@ -371,29 +466,34 @@ class SmartTokenProd:
                 )
             return None, info
 
-        # Correct master at any tier (incl. ≥3): pay once → OPEN + reset
-        self.tarpit.reset()
-        key = derive_aes_key(ss)
-        try:
-            plaintext = aes_gcm_decrypt(key, self.nonce, self.ciphertext, self._aad)
-            info["aes_gcm_ok"] = True
-            info["payload"] = plaintext
-            info["friction_state"] = self.friction_snapshot()
-            info["status"] = "OPEN"
-            info["recoverable"] = True
-            info["work_factor"] = 1
-            return plaintext, info
-        except Exception as e:
-            info["aes_gcm_ok"] = False
-            info["aes_error"] = str(e)
+        # Correct master: count a validation. N fails require N+1 (cap 4).
+        snap = self.friction_snapshot()
+        snap["validations_ok"] = int(self._validations_ok)
+        progressed = apply_correct_validation(snap)
+        self._validations_ok = int(progressed["validations_ok"])
+        if not progressed.get("ready_to_open"):
             info["status"] = "DENIED"
             info["recoverable"] = False
+            info["friction_state"] = self.friction_snapshot()
             return None, info
+
+        self.tarpit.reset()
+        self._validations_ok = 0
+        info["payload"] = plaintext
+        info["friction_state"] = self.friction_snapshot()
+        info["status"] = "OPEN"
+        info["recoverable"] = True
+        info["work_factor"] = 1
+        return plaintext, info
 
     def friction_snapshot(self) -> Dict:
         snap = dict(self.tarpit.snapshot())
         snap.setdefault("recovery_tier", 0)
         snap.setdefault("work_factor", 1)
         snap.setdefault("cumulative_iters", 0)
+        from .recovery import validations_required as _vr
+        fc = int(snap.get("fail_count", 0) or 0)
+        snap["validations_ok"] = int(getattr(self, "_validations_ok", 0) or 0)
+        snap["validations_required"] = _vr(fc)
         snap.pop("recovery_debt", None)
         return snap
