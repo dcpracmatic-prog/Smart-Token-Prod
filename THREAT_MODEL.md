@@ -1,4 +1,4 @@
-# Modelo de amenazas — Smart Token Prod
+# Modelo de amenazas — Smart Token Prod (v0.8.2)
 
 Estado: **borrador técnico interno**. Esto NO sustituye una auditoría de
 seguridad independiente — es el punto de partida que un auditor necesitaría

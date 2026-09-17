@@ -1,9 +1,12 @@
-# Smart Token Prod v0.8.0
+# Smart Token Prod v0.8.2
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
+
+Versión del paquete: **0.8.2** (`pyproject.toml` / `smart_token_prod.__version__`).
+Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
 
@@ -14,16 +17,21 @@ aquí Argon2 **endurece la trampa**, no la reemplaza.
 5. **Argon2id + trabajo de trampa** — en **cada** intento (correcto o incorrecto)
 6. **Denegaciones opacas** — CLI/API de deny **no** anuncian tier, fail_count ni work_factor
 7. **Phase 3 hang** — wrong master con `recovery_tier ≥ 3` → bucle bloqueante que **no retorna**
-8. **Núcleo C++** — `libfriction.so` + FFI opcional (`auto`/`native`/`python`)
-9. **`sk` fuera de banda** — `.stok.key`
-10. **CLI** — `smart-token protect | open | status | demo`
+8. **Validation ladder (v0.8.1)** — tras N fallos, OPEN pide N+1 masters correctos seguidos (tope 4)
+9. **FrictionStore compartido (v0.8.2)** — `FileFrictionStore` + flock / lock de `.stok`; réplicas en el mismo disco suman el mismo `fail_count`
+10. **Núcleo C++** — `libfriction.so` + FFI opcional (`auto`/`native`/`python`)
+11. **`sk` fuera de banda** — `.stok.key`
+12. **CLI** — `smart-token protect | open | status | demo`
 
-## Contrato de producto (v0.7.0)
+## Contrato de producto (v0.8.2)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
-  → master correcto  → OPEN + plaintext + reset friction (incluso si tier≥3)
-  → master incorrecto → DENIED opaco + escalate fase en .stok
+  → master correcto  → cuenta hacia OPEN (ladder: tras N fallos hacen falta
+                       N+1 correctos seguidos, tope 4) + plaintext + reset friction
+                       (incluso si tier≥3), cuando la ladder se completa
+  → master incorrecto → DENIED opaco + escalate fase en .stok / store
+       parciales correctos en ladder incompleta → DENIED opaco (sin reset)
        si recovery_tier ≥ 3 → entra grind Argon2+iters (+fib flavor) y NO RETORNA
        (atacante debe matar el proceso; .stok castigado ya persistió)
 
@@ -31,6 +39,10 @@ Fases (snapshot; no se imprimen en deny):
   fail 1 → fase 1 (flag_fibonacci)
   fail 2 → fase 2 (flag_persistencia)
   fail 3+ → fase 3 (tarpit_triggered); tier salta @11k/22k/33k cum iters (máx 3)
+
+Réplicas (mismo host / disco compartido):
+  FileFrictionStore + flock + archivo.stok.lock → un fail_count compartido
+  Hosts distintos sin Redis/store de red → fuera de alcance (ver límites)
 ```
 
 - Differentiator = **trampa lógica persistente + crypto PQ**, no Argon2 solo.
@@ -38,6 +50,8 @@ Fases (snapshot; no se imprimen en deny):
   **no** dureza criptográfica por sí sola.
 - El archivo **nunca se destruye** por fallos.
 - `status` inspecciona el snapshot (herramienta del dueño); **open** deny es opaco.
+- Quien posee `sk` puede re-MAC un snapshot reseteado y saltarse el tarpit
+  oficial; **no** obtiene plaintext sin master (límite documentado desde v0.8.0).
 
 ## Uso rápido
 
@@ -51,7 +65,7 @@ smart-token protect modelo.stl --master "mi-secreto"
 # Deny opaco (sin imprimir tier). Tras phase 3 + wrong: el proceso puede colgarse.
 smart-token open modelo.stl.stok --master "malo" --key modelo.stl.stok.key
 
-# Correcto incluso tras castigo → OPEN + reset
+# Correcto incluso tras castigo → OPEN + reset (respetando ladder si aplica)
 smart-token open modelo.stl.stok --master "mi-secreto" --key modelo.stl.stok.key -o out.stl
 
 smart-token status modelo.stl.stok   # inspección interna del snapshot
@@ -70,7 +84,7 @@ override `_phase3_hang=False` en `open` / `open_stok`.
 
 ```bash
 # 1) Proteger y fallar hasta tier 3 (hang OFF solo en tests; en prod hang ON)
-smart-token demo   # demo desactiva hang vía _phase3_hang   # demo desactiva hang internamente
+smart-token demo   # la demo desactiva hang internamente
 
 # 2) Castigar a tier≥3, luego wrong open con hang (proceso no retorna ~segundos)
 #    Ver test_wrong_open_at_tier3_hangs_in_subprocess — subprocess + timeout.
@@ -78,21 +92,32 @@ smart-token demo   # demo desactiva hang vía _phase3_hang   # demo desactiva ha
 # 3) Mismo .stok castigado + master correcto → OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.7.0)
+## Límites de esta versión (v0.8.2)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
 | Confidencialidad ML-KEM + AES-GCM del payload | Canales laterales |
 | Trap + fail_count compartidos en el `.stok` (flock) y en `FileFrictionStore` | Réplicas en hosts distintos sin disco/Redis compartido |
 | Deuda de **cómputo / hang** viaja con el `.stok` si se copia *después* de fallar | Bloqueo de **copia limpia pre-ataque** |
-| `sk` en `.stok.key` | HSM/KMS; Android / Termux |
-| Un master correcto siempre puede abrir (pagando el costo una vez) | “Destruir archivo tras N fallos” (**no**) |
+| `sk` en `.stok.key` | HSM/KMS cableado al flujo; Android / Termux |
+| Un master correcto siempre puede abrir (pagando el costo; ladder si hubo fallos) | “Destruir archivo tras N fallos” (**no**) |
 | Hang de fase 3 es best-effort en-proceso (kill = salida) | Hang a prueba de ptrace / OS scheduler abuse |
+| Binding v2: sin master no hay plaintext | Poseedor de `sk` que re-MAC/resetee friction (salta tarpit, no obtiene payload) |
 
 **Resumen:** el valor de producto es la **máquina de estados de trampa**
 persistente + PQ crypto; Argon2 es el endurecimiento commodity de cada intento.
 
-Detalle en `THREAT_MODEL.md`.
+Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
+
+## Estado del artefacto (honestidad operativa)
+
+- Paquete instalable (`pip install -e ".[dev]"`); CLI `smart-token`.
+- Suite `tests/` y scripts bajo `scripts/` (replicas, flujo completo, costo de ataque).
+- `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como
+  abstracción — **no** están cableados al path principal `protect`/`open`.
+- **CI:** no hay workflow `.github/workflows/` en este repositorio todavía
+  (una mención histórica en el CHANGELOG de v0.4.0 no implica que el archivo
+  esté presente hoy).
 
 ## License
 

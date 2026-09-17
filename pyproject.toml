@@ -8,7 +8,7 @@ version = "0.8.2"
 description = "Token post-cuantico (ML-KEM + AES-256-GCM) con trampa logica persistente (fases 1-3) endurecida por Argon2id, nucleo C++ opcional y capa .stok; sk fuera de banda"
 readme = "README.md"
 requires-python = ">=3.9"
-license = { text = "Elastic-2.0" }  # decision de negocio pendiente: ver nota abajo
+license = { text = "Elastic-2.0" }  # vigente: Elastic License 2.0 (ver LICENSE.txt)
 authors = [
     { name = "Arturo Salvador Balderas Hernandez" }
 ]
@@ -32,11 +32,7 @@ include = ["smart_token_prod*"]
 [tool.setuptools.package-data]
 smart_token_prod = []
 
-# NOTA DE LICENCIA (decision tuya, no tecnica):
-# "Proprietary" es un placeholder. Si el plan es vender como SDK cerrado,
-# esto es correcto pero necesitas un texto de licencia comercial real
-# (LICENSE.txt) redactado o revisado por un abogado. Si el plan es
-# open-core / abrir el nucleo y cobrar por soporte o el backend nativo,
-# la licencia seria otra (MIT/Apache-2.0 para el core + termino comercial
-# aparte). Esta decision cambia el modelo de negocio, asi que la dejo
-# explicita en vez de elegir por ti.
+# LICENCIA: Elastic License 2.0 (LICENSE.txt). Source-available; no es OSI
+# open source. No ofrece el software a terceros como servicio alojado/gestionado
+# que exponga un conjunto sustancial de sus funciones. Texto legal sujeto a
+# revision por abogado si el modelo comercial cambia.

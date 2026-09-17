@@ -1,5 +1,12 @@
 # Changelog
 
+## Docs — alineación v0.8.2 (sin cambios de código)
+
+- README: versión, contrato, límites y estado operativo alineados a **v0.8.2**
+  (binding v2, ladder, FrictionStore compartido, licencia Elastic-2.0).
+- `pyproject.toml`: nota de licencia actualizada (ya no “decisión pendiente”).
+- Corrección histórica: la mención de CI en v0.4.0 no implica workflow presente.
+
 ## v0.8.2 — FrictionStore compartido (réplicas)
 
 - `FileFrictionStore` + `flock`: un fail_count por identidad en disco.
@@ -129,8 +136,8 @@
   ~1.2x. Ninguno tiene límite de concurrencia — pendiente.
 - Empaquetado como paquete instalable (`pyproject.toml`), con `pip install -e .`
   funcional.
-- CI (`.github/workflows/ci.yml`) escrito y listo — no ejecutado aquí
-  porque requiere un repositorio real en GitHub.
+- CI (`.github/workflows/ci.yml`): planeado en esa etapa; **no forma parte**
+  del árbol actual del repositorio (no hay workflow presente hoy).
 
 ## v0.3.0-aes-gcm
 
