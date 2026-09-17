@@ -6,8 +6,12 @@ Uso:
   smart-token open   archivo.stl.stok [--master SECRET] [--key archivo.stok.key] [-o out]
   smart-token status archivo.stl.stok
   smart-token demo   [archivo_muestra]
+  smart-token version
+  smart-token doctor
+  smart-token print-dep [--editable PATH]
+  smart-token integrate PROJECT_DIR [--bridge PATH] [--editable PATH] [--dry-run]
 
-Contrato v0.7.0:
+Contrato v0.9.0:
   - Denegaciones OPAQUE (sin tier / fail_count / work_factor en stdout).
   - Tras phase 3 (tier≥3) + master incorrecto: open entra en bucle que no retorna.
   - status inspecciona el snapshot (herramienta del dueño, no oráculo de deny).
@@ -257,6 +261,87 @@ def cmd_demo(args: argparse.Namespace) -> int:
     return 0
 
 
+
+
+def cmd_version(args: argparse.Namespace) -> int:
+    from . import __version__
+
+    print(__version__)
+    return 0
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    """Check imports and print sdk.status()."""
+    checks = [
+        ("pqcrypto", "pqcrypto"),
+        ("cryptography", "cryptography"),
+        ("argon2", "argon2"),
+    ]
+    print("Smart Token Prod — doctor")
+    for label, modname in checks:
+        try:
+            __import__(modname)
+            print(f"  {label:14s}: OK")
+        except Exception as exc:
+            print(f"  {label:14s}: FAIL ({exc})")
+    try:
+        from . import native as _native
+
+        avail = _native.is_available()
+        print(f"  {'native':14s}: {'OK (libfriction)' if avail else 'optional (not loaded)'}")
+    except Exception as exc:
+        print(f"  {'native':14s}: FAIL ({exc})")
+
+    from .sdk import status as sdk_status
+
+    st = sdk_status()
+    print("status():")
+    for k, v in st.items():
+        print(f"  {k}: {v}")
+    return 0 if st.get("available") else 1
+
+
+def cmd_print_dep(args: argparse.Namespace) -> int:
+    from .integrate import print_dep_lines
+
+    editable = Path(args.editable) if getattr(args, "editable", None) else None
+    for line in print_dep_lines(editable):
+        print(line)
+    return 0
+
+
+def cmd_integrate(args: argparse.Namespace) -> int:
+    from .integrate import run_integrate
+
+    root = Path(args.project_dir)
+    editable = Path(args.editable) if getattr(args, "editable", None) else None
+    mode = "editable" if editable else "git"
+    bridge = args.bridge if getattr(args, "bridge", None) else "smart_token_bridge.py"
+    dry_run = bool(getattr(args, "dry_run", False))
+
+    summary = run_integrate(
+        root,
+        bridge_path=bridge,
+        mode=mode,
+        editable_path=editable,
+        dry_run=dry_run,
+    )
+    print("smart-token integrate" + (" (dry-run)" if dry_run else ""))
+    print(f"  root     : {summary['root']}")
+    print(f"  kind     : {summary['detect']['kind']}")
+    print(f"  dep      : {summary['dependency']['action']} → {summary['dependency']['line']}")
+    print(f"  bridge   : {summary['bridge']['path']}")
+    print(f"  notes    : {summary['notes']['path']}")
+    if summary.get("extra_note"):
+        print(f"  extra    : {summary['extra_note']}")
+    if summary.get("vendor_stp_path"):
+        print(f"  vendor   : FOUND at {summary['vendor_stp_path']} — remove after migrating")
+    print("  next:")
+    for step in summary["next_steps"]:
+        print(f"    - {step}")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="smart-token",
@@ -305,6 +390,48 @@ def build_parser() -> argparse.ArgumentParser:
     p_demo = sub.add_parser("demo", parents=[common], help="Demo: protect + legítimo + trap opaco")
     p_demo.add_argument("sample", nargs="?", default=None)
     p_demo.set_defaults(func=cmd_demo)
+
+    p_version = sub.add_parser("version", help="Print package version")
+    p_version.set_defaults(func=cmd_version)
+
+    p_doctor = sub.add_parser("doctor", help="Check imports and print sdk.status()")
+    p_doctor.set_defaults(func=cmd_doctor)
+
+    p_print_dep = sub.add_parser(
+        "print-dep",
+        help="Print pip install line(s) for this package",
+    )
+    p_print_dep.add_argument(
+        "--editable",
+        default=None,
+        metavar="PATH",
+        help="Print editable install line for PATH instead of git URL",
+    )
+    p_print_dep.set_defaults(func=cmd_print_dep)
+
+    p_integrate = sub.add_parser(
+        "integrate",
+        help="Scaffold bridge + dep notes into a host project directory",
+    )
+    p_integrate.add_argument("project_dir", help="Target project root")
+    p_integrate.add_argument(
+        "--bridge",
+        default="smart_token_bridge.py",
+        metavar="PATH",
+        help="Relative path for the bridge module (default: smart_token_bridge.py)",
+    )
+    p_integrate.add_argument(
+        "--editable",
+        default=None,
+        metavar="PATH",
+        help="Use editable dep pointing at PATH instead of git URL",
+    )
+    p_integrate.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print plan only; do not write files",
+    )
+    p_integrate.set_defaults(func=cmd_integrate)
 
     return p
 

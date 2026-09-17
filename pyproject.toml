@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-token-prod"
-version = "0.8.2"
+version = "0.9.0"
 description = "Token post-cuantico (ML-KEM + AES-256-GCM) con trampa logica persistente (fases 1-3) endurecida por Argon2id, nucleo C++ opcional y capa .stok; sk fuera de banda"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -18,6 +18,11 @@ dependencies = [
     "numpy>=1.24",
     "argon2-cffi>=23",
 ]
+
+[project.urls]
+Homepage = "https://github.com/dcpracmatic-prog/Smart-Token-Prod"
+Repository = "https://github.com/dcpracmatic-prog/Smart-Token-Prod"
+Documentation = "https://github.com/dcpracmatic-prog/Smart-Token-Prod/blob/main/docs/INTEGRATION.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=7", "pytest-cov"]

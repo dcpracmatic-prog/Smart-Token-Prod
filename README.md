@@ -1,11 +1,11 @@
-# Smart Token Prod v0.8.2
+# Smart Token Prod v0.9.0
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.8.2** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.9.0** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -21,9 +21,9 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 9. **FrictionStore compartido (v0.8.2)** — `FileFrictionStore` + flock / lock de `.stok`; réplicas en el mismo disco suman el mismo `fail_count`
 10. **Núcleo C++** — `libfriction.so` + FFI opcional (`auto`/`native`/`python`)
 11. **`sk` fuera de banda** — `.stok.key`
-12. **CLI** — `smart-token protect | open | status | demo`
+12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate`
 
-## Contrato de producto (v0.8.2)
+## Contrato de producto (v0.9.0)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
@@ -52,6 +52,19 @@ Réplicas (mismo host / disco compartido):
 - `status` inspecciona el snapshot (herramienta del dueño); **open** deny es opaco.
 - Quien posee `sk` puede re-MAC un snapshot reseteado y saltarse el tarpit
   oficial; **no** obtiene plaintext sin master (límite documentado desde v0.8.0).
+
+
+## Usar como componente en otro proyecto
+
+En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
+instala el paquete y usa el scaffolding:
+
+```bash
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.9.0"
+smart-token integrate /ruta/al/proyecto
+```
+
+Detalle, migración fuera de vendor/ y API SDK: [`docs/INTEGRATION.md`](docs/INTEGRATION.md).
 
 ## Uso rápido
 
@@ -92,7 +105,7 @@ smart-token demo   # la demo desactiva hang internamente
 # 3) Mismo .stok castigado + master correcto → OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.8.2)
+## Límites de esta versión (v0.9.0)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
@@ -111,7 +124,8 @@ Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
 
 ## Estado del artefacto (honestidad operativa)
 
-- Paquete instalable (`pip install -e ".[dev]"`); CLI `smart-token`.
+- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.9.0`); CLI `smart-token`.
+- SDK (`smart_token_prod.sdk`) + `smart-token integrate` para consumidores externos.
 - Suite `tests/` y scripts bajo `scripts/` (replicas, flujo completo, costo de ataque).
 - `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como
   abstracción — **no** están cableados al path principal `protect`/`open`.

@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.0 — SDK + CLI integrate (componente instalable)
+
+- `smart_token_prod.sdk`: API de alto nivel (`is_available`, `status`,
+  `protect_artifact`, `open_artifact`, `artifact_friction_status`) para
+  que otros proyectos consuman el paquete vía pip/git sin vendoring de
+  `vendor/smart_token_prod/`.
+- `smart_token_prod.integrate`: scaffolding local (bridge, notas,
+  línea de dependencia en requirements o hint file; no reescribe
+  `pyproject.toml` a ciegas; sin escrituras de red fuera del proyecto
+  destino).
+- CLI: `version`, `doctor`, `print-dep [--editable PATH]`,
+  `integrate PROJECT_DIR [--bridge PATH] [--editable PATH] [--dry-run]`.
+- Docs: `docs/INTEGRATION.md` (ES); sección en README; `__version__` /
+  `pyproject.toml` → **0.9.0**; `[project.urls]` → GitHub.
+- Tests: `tests/test_integrate_cli.py` (dry-run / write / doctor /
+  version; sin red).
+- Sin cambios en el contrato protect/open/status/demo ni en crypto.
+
 ## Docs — alineación v0.8.2 (sin cambios de código)
 
 - README: versión, contrato, límites y estado operativo alineados a **v0.8.2**
