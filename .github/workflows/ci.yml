@@ -17,10 +17,16 @@ concurrency:
 
 env:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  SMART_TOKEN_PHASE3_HANG: "0"
+  # Argon2id is deliberately memory-hard; these keep CI wall time sane without
+  # changing any behaviour under test.
   SMART_TOKEN_ARGON2_TIME: "1"
   SMART_TOKEN_ARGON2_MEM: "8192"
   SMART_TOKEN_ARGON2_PARALLELISM: "1"
+  # NOTE: SMART_TOKEN_PHASE3_HANG is deliberately NOT set here.
+  # test_work_factor_helpers_unit asserts phase3_hang_enabled() is True because
+  # that is the product default, so setting it workflow-wide made the suite fail
+  # on its own contract. It is set per-step only where the blocking grind would
+  # otherwise stall the runner.
 
 jobs:
   python:
@@ -40,10 +46,27 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ make
+
       - name: Install package and test extras
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev]"
+
+      - name: Build the friction core for the [native] parametrisations
+        run: |
+          # tests/test_smart_token_prod.py parametrises several cases over the
+          # native backend, and core.make_tarpit RAISES NativeUnavailableError
+          # when libfriction.so is missing instead of skipping. Without this the
+          # matrix fails on four tests that are not actually broken. Building it
+          # also means the [native] cases and test_native_python_parity.py are
+          # real coverage here rather than dead weight.
+          make -C cpp libfriction.so
+          cp cpp/libfriction.so smart_token_prod/libfriction.so
+          python -c "from smart_token_prod.native import is_available; assert is_available()"
 
       - name: Unit tests
         run: pytest tests/ -v --tb=short
@@ -54,6 +77,11 @@ jobs:
           smart-token doctor
 
       - name: CLI smoke (protect / status / open)
+        env:
+          # This step forces a wrong-secret open. At fail_count >= 3 the phase-3
+          # blocking grind does not return, which is the intended product
+          # behaviour but would hang the runner, so disable it here only.
+          SMART_TOKEN_PHASE3_HANG: "0"
         run: |
           printf 'stp-ci-payload\n' > /tmp/sample.bin
           smart-token protect /tmp/sample.bin --master "ci-master-secret"
