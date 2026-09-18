@@ -19,6 +19,7 @@ material que permita decapsular sin la clave de custodia.
 from __future__ import annotations
 
 import base64
+import os
 import hashlib
 import hmac
 import json
@@ -41,6 +42,8 @@ from .core import (
     mlkem_decaps,
     friction_mac,
     BINDING_VERSION,
+    public_info,
+    OPAQUE_DENY_KEYS,
 )
 from .recovery import (
     apply_failure_to_snapshot,
@@ -57,24 +60,9 @@ from .recovery import (
 )
 
 
-# Fields safe to return on DENIED when reveal_friction=False (product API opacity).
-_OPAQUE_DENY_KEYS = (
-    "path",
-    "status",
-    "binding_version",
-    "work_factor_paid",
-    "hash_iters_paid",
-)
-
-
-def _public_info(info: Dict[str, Any], *, reveal_friction: bool) -> Dict[str, Any]:
-    """Strip friction/ladder oracle from DENIED responses unless owner opts in."""
-    if reveal_friction or info.get("status") != "DENIED":
-        # Never leak hang kwargs to callers
-        out = dict(info)
-        out.pop("_hang", None)
-        return out
-    return {k: info[k] for k in _OPAQUE_DENY_KEYS if k in info}
+# Back-compat aliases (canonical defs live in core).
+_OPAQUE_DENY_KEYS = OPAQUE_DENY_KEYS
+_public_info = public_info
 
 
 MAGIC = b"STOK"
@@ -83,13 +71,69 @@ KEY_MAGIC = b"STKEY"
 KEY_VERSION = 1
 
 
+class StokLock:
+    """Exclusive advisory lock bound to a specific .stok inode.
+
+    Writes go through the locked fd (same inode). Before/after mutation we
+    verify that `path` still resolves to that inode — unlink+recreate at the
+    path yields a NEW inode and is rejected (fail-closed), closing the
+    flock advisory bypass where a second opener races on the replacement.
+    """
+
+    __slots__ = ("path", "fh", "dev", "ino")
+
+    def __init__(self, path: Path, fh, dev: int, ino: int):
+        self.path = Path(path)
+        self.fh = fh
+        self.dev = int(dev)
+        self.ino = int(ino)
+
+    def inode_tuple(self):
+        return (self.dev, self.ino)
+
+    def assert_same_inode(self) -> None:
+        st_fd = os.fstat(self.fh.fileno())
+        if (st_fd.st_dev, st_fd.st_ino) != (self.dev, self.ino):
+            raise RuntimeError("stok locked fd inode changed unexpectedly")
+        try:
+            st_path = os.stat(self.path, follow_symlinks=True)
+        except FileNotFoundError as e:
+            raise RuntimeError(
+                f"stok path unlinked under lock (inode bypass): {self.path}"
+            ) from e
+        if (st_path.st_dev, st_path.st_ino) != (self.dev, self.ino):
+            raise RuntimeError(
+                f"stok path replaced under lock (new inode bypass): {self.path}"
+            )
+
+    def read_all(self) -> bytes:
+        self.assert_same_inode()
+        self.fh.seek(0)
+        return self.fh.read()
+
+    def write_all(self, data: bytes) -> None:
+        """Overwrite locked inode in place (no path reopen / no inode change)."""
+        self.assert_same_inode()
+        self.fh.seek(0)
+        self.fh.write(data)
+        self.fh.truncate(len(data))
+        self.fh.flush()
+        try:
+            os.fsync(self.fh.fileno())
+        except OSError:
+            pass
+        self.assert_same_inode()
+
+
 @contextmanager
-def exclusive_stok(path: str | Path) -> Iterator[None]:
+def exclusive_stok(path: str | Path) -> Iterator["StokLock"]:
     """Serialize open_stok writers on the .stok inode itself.
 
     Sidecar `.stok.lock` files are NOT used: an attacker who unlinks the
     sidecar can create a fresh lock inode and bypass the critical section.
-    Advisory flock on the data file inode cannot be bypassed that way.
+
+    Yields a StokLock: flock + inode binding. Path unlink/recreate while the
+    lock is held raises RuntimeError on verify/write (fail-closed).
     """
     path = Path(path)
     if not path.is_file():
@@ -98,7 +142,10 @@ def exclusive_stok(path: str | Path) -> Iterator[None]:
     try:
         if fcntl is not None:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        yield
+        st = os.fstat(fh.fileno())
+        lock = StokLock(path=path, fh=fh, dev=st.st_dev, ino=st.st_ino)
+        lock.assert_same_inode()
+        yield lock
     finally:
         if fcntl is not None:
             try:
@@ -303,16 +350,35 @@ def protect_file(
     return output_path, key_path
 
 
-def write_stok(stok: StokFile, path: str | Path) -> None:
-    path = Path(path)
+def _stok_bytes(stok: StokFile) -> bytes:
     body = json.dumps(stok.to_dict(), separators=(",", ":"), ensure_ascii=True).encode("utf-8")
     header = MAGIC + struct.pack(">B", VERSION) + struct.pack(">I", len(body))
-    path.write_bytes(header + body)
+    return header + body
 
 
-def read_stok(path: str | Path) -> StokFile:
+def write_stok(stok: StokFile, path: str | Path, *, lock: Optional["StokLock"] = None) -> None:
+    """Persist .stok. Under StokLock: write via locked fd + inode verify.
+
+    Without lock (e.g. protect_file create): atomic tmp + os.replace.
+    """
     path = Path(path)
-    data = path.read_bytes()
+    data = _stok_bytes(stok)
+    if lock is not None:
+        if Path(lock.path) != path and lock.path.resolve() != path.resolve():
+            raise ValueError(f"StokLock path mismatch: lock={lock.path} write={path}")
+        lock.write_all(data)
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
+def read_stok(path: str | Path, *, lock: Optional["StokLock"] = None) -> StokFile:
+    path = Path(path)
+    if lock is not None:
+        data = lock.read_all()
+    else:
+        data = path.read_bytes()
     if len(data) < 9 or data[:4] != MAGIC:
         raise ValueError(f"Archivo no es un .stok válido (magic incorrecto): {path}")
     version = data[4]
@@ -376,23 +442,43 @@ def open_stok(
     Dueño: reveal_friction=True o CLI `status`.
     """
     path = Path(path)
-    with exclusive_stok(path):
-        plaintext, info = _open_stok_body(
-            path=path,
-            master_secret=master_secret,
-            sk=sk,
-            key_path=key_path,
-            provided_salt=provided_salt,
-            provided_material=provided_material,
-            force_failure=force_failure,
-            output_path=output_path,
-            update_friction=update_friction,
-            hang_after_holder=None,
-        )
+    try:
+        with exclusive_stok(path) as lock:
+            plaintext, info = _open_stok_body(
+                path=path,
+                master_secret=master_secret,
+                sk=sk,
+                key_path=key_path,
+                provided_salt=provided_salt,
+                provided_material=provided_material,
+                force_failure=force_failure,
+                output_path=output_path,
+                update_friction=update_friction,
+                hang_after_holder=None,
+                lock=lock,
+            )
+    except RuntimeError as e:
+        # Inode replace / unlink under lock → fail-closed DENIED (no oracle, no crash).
+        msg = str(e).lower()
+        if "inode" in msg or "replaced" in msg or "unlinked" in msg:
+            info = {
+                "path": str(path),
+                "status": "DENIED",
+                "binding_version": BINDING_VERSION,
+                "integrity_error": "stok_inode_race",
+            }
+            return None, _public_info(info, reveal_friction=reveal_friction)
+        raise
     hang = info.pop("_hang", None)
     public = _public_info(info, reveal_friction=reveal_friction)
     if hang:
-        phase3_blocking_grind(**hang)
+        from .recovery import try_acquire_hang_slot, release_hang_slot
+        if try_acquire_hang_slot():
+            try:
+                phase3_blocking_grind(**hang)
+            finally:
+                release_hang_slot()
+        # else: process-local hang slots full — DENIED already persisted; no extra grind
     return plaintext, public
 
 
@@ -408,8 +494,9 @@ def _open_stok_body(
     output_path,
     update_friction: bool,
     hang_after_holder,
+    lock: Optional["StokLock"] = None,
 ):
-    stok = read_stok(path)
+    stok = read_stok(path, lock=lock)
 
     info: Dict[str, Any] = {
         "path": str(path),
@@ -586,7 +673,7 @@ def _open_stok_body(
         if can_persist_friction:
             stok.friction_snapshot = new_snap
             stok.friction_mac = friction_mac(ss, new_snap, stok.pk, stok.ct)
-            write_stok(stok, path)
+            write_stok(stok, path, lock=lock)
             if _store is not None:
                 _store.save(_store_id, new_snap)
         else:
@@ -613,7 +700,7 @@ def _open_stok_body(
         if can_persist_friction:
             stok.friction_snapshot = progressed
             stok.friction_mac = friction_mac(ss, progressed, stok.pk, stok.ct)
-            write_stok(stok, path)
+            write_stok(stok, path, lock=lock)
             if _store is not None:
                 _store.save(_store_id, progressed)
         return None, info
@@ -633,7 +720,7 @@ def _open_stok_body(
     if can_persist_friction:
         stok.friction_snapshot = cleared
         stok.friction_mac = friction_mac(ss, cleared, stok.pk, stok.ct)
-        write_stok(stok, path)
+        write_stok(stok, path, lock=lock)
         if _store is not None:
             _store.clear(_store_id)
 
@@ -659,8 +746,8 @@ def repair_friction_mac(
     Requires sk (parameter, key_path, sibling .key, or legacy embedded sk).
     """
     path = Path(path)
-    with exclusive_stok(path):
-        stok = read_stok(path)
+    with exclusive_stok(path) as lock:
+        stok = read_stok(path, lock=lock)
         resolved_sk = sk
         if resolved_sk is None and key_path is not None:
             resolved_sk = read_key_file(key_path)
@@ -676,7 +763,7 @@ def repair_friction_mac(
         snap = dict(stok.friction_snapshot or {})
         new_mac = friction_mac(ss, snap, stok.pk, stok.ct)
         stok.friction_mac = new_mac
-        write_stok(stok, path)
+        write_stok(stok, path, lock=lock)
         return {
             "path": str(path),
             "status": "REPAIRED",

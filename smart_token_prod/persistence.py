@@ -99,6 +99,14 @@ class FileFrictionStore(FrictionStore):
 
     @contextmanager
     def _lock(self, identity: str) -> Iterator[None]:
+        """Exclusive flock on a durable per-identity lock inode.
+
+        The `.lock` file is created once and NEVER unlinked by this store
+        (clear only removes `.json`). Unlink+recreate of the lock path by an
+        attacker is still possible; callers needing stronger guarantees should
+        use Redis/broker. Best-effort: we also refuse to proceed if the lock
+        path inode changes mid-section (detects replacement).
+        """
         lock_path = self._lock_path(identity)
         lock_path.touch(exist_ok=True)
         with open(lock_path, "a+b") as fh:
@@ -106,8 +114,19 @@ class FileFrictionStore(FrictionStore):
                 yield
                 return
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            st0 = os.fstat(fh.fileno())
             try:
+                st_path = os.stat(lock_path)
+                if (st_path.st_dev, st_path.st_ino) != (st0.st_dev, st0.st_ino):
+                    raise RuntimeError(
+                        f"FileFrictionStore lock path replaced under flock: {lock_path}"
+                    )
                 yield
+                st_path2 = os.stat(lock_path)
+                if (st_path2.st_dev, st_path2.st_ino) != (st0.st_dev, st0.st_ino):
+                    raise RuntimeError(
+                        f"FileFrictionStore lock path replaced under flock: {lock_path}"
+                    )
             finally:
                 fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
@@ -130,11 +149,13 @@ class FileFrictionStore(FrictionStore):
         payload = dict(snapshot)
         if ttl_seconds is not None:
             payload["_expires_at"] = time.time() + int(ttl_seconds)
-        tmp = self._data_path(identity).with_suffix(".json.tmp")
+        target = self._data_path(identity)
+        tmp = target.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
-        os.replace(tmp, self._data_path(identity))
+        os.replace(tmp, target)
 
     def clear(self, identity: str) -> None:
+        # Only data file — durable .lock inode retained to avoid unlink bypass.
         self._data_path(identity).unlink(missing_ok=True)
 
     def locked_update(

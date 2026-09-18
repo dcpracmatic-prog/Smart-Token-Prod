@@ -268,6 +268,74 @@ def phase3_blocking_grind(
         fib_n = (fib_n % 40) + 2
 
 
+# ---------------------------------------------------------------------------
+# Process-local hang backpressure (R3)
+# ---------------------------------------------------------------------------
+# Non-returning hangs occupy a slot until the process is killed. Extra hang
+# attempts beyond the limit return DENIED without entering another grind
+# (friction already persisted). This is BEST-EFFORT and process-local only —
+# multi-process / multi-host concurrency is NOT capped here.
+DEFAULT_MAX_CONCURRENT_HANGS = 2
+_hang_sem = None
+_hang_sem_limit = None
+_hang_sem_lock = None
+
+
+def _hang_threading():
+    import threading
+    return threading
+
+
+def max_concurrent_hangs() -> int:
+    raw = os.environ.get("SMART_TOKEN_MAX_CONCURRENT_HANGS", str(DEFAULT_MAX_CONCURRENT_HANGS))
+    try:
+        n = int(raw)
+    except ValueError:
+        n = DEFAULT_MAX_CONCURRENT_HANGS
+    return max(1, n)
+
+
+def _get_hang_sem():
+    """Lazy BoundedSemaphore resized when env limit changes (tests)."""
+    global _hang_sem, _hang_sem_limit, _hang_sem_lock
+    threading = _hang_threading()
+    if _hang_sem_lock is None:
+        _hang_sem_lock = threading.Lock()
+    limit = max_concurrent_hangs()
+    with _hang_sem_lock:
+        if _hang_sem is None or _hang_sem_limit != limit:
+            _hang_sem = threading.BoundedSemaphore(limit)
+            _hang_sem_limit = limit
+        return _hang_sem
+
+
+def reset_hang_backpressure_for_tests() -> None:
+    """Test helper: drop the process-local semaphore so limit changes apply."""
+    global _hang_sem, _hang_sem_limit
+    _hang_sem = None
+    _hang_sem_limit = None
+
+
+def try_acquire_hang_slot() -> bool:
+    """Non-blocking. True → caller may enter phase3_blocking_grind."""
+    return bool(_get_hang_sem().acquire(blocking=False))
+
+
+def release_hang_slot() -> None:
+    """Release a hang slot (only reachable if grind is interrupted/mocked)."""
+    try:
+        _get_hang_sem().release()
+    except ValueError:
+        pass
+
+
+def hang_slots_available() -> int:
+    """Approx free slots (for tests). Not an API oracle for product deny."""
+    sem = _get_hang_sem()
+    # CPython BoundedSemaphore exposes _value
+    return int(getattr(sem, "_value", 0))
+
+
 # Back-compat aliases
 def debt_for_tier(tier: int) -> int:
     return work_factor_for_tier(tier)

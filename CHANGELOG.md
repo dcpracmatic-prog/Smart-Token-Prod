@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.10.2 — Cycle-2 adversarial harden (inode write, opaque open, hang BP)
+
+### P0 — R1 flock bypass via `.stok` unlink+recreate
+- **Bug residual after 0.10.1:** flock bound the data inode, but `write_stok`
+  reopened by **path**. Unlink + recreate at the same path → new inode;
+  concurrent opener could race; holder could write to the replacement.
+- **Fix:** `StokLock` — flock + `(dev,ino)` binding; reads/writes through the
+  locked fd; `assert_same_inode` before/after mutation. Path replace under
+  lock → **fail-closed**. `open_stok` maps that race to opaque DENIED (no
+  crash/oracle). Unlocked create still uses tmp + `os.replace`.
+
+### P0 — R2 in-memory `SmartTokenProd.open` oracle
+- **Bug:** `open_stok` was opaque, but in-memory `SmartTokenProd.open` still
+  returned `friction_state` / ladder details on DENIED.
+- **Fix:** `reveal_friction=False` by default (same opacity contract as
+  `open_stok`); owner opt-in unchanged. Shared `public_info` / `OPAQUE_DENY_KEYS`
+  in `core`.
+
+### P1 — R3 hang concurrency backpressure (best-effort local)
+- Process-local `BoundedSemaphore` (`SMART_TOKEN_MAX_CONCURRENT_HANGS`, default 2).
+- When slots are full, DENIED still returns (friction already persisted) but
+  **skips** entering another non-returning grind.
+- **Residual (documented):** not a Redis/cluster limit; multi-process /
+  multi-host hang storms remain out of scope without external caps.
+
+### Also
+- `FileFrictionStore`: durable `.lock` inode (clear does not unlink lock);
+  detect lock-path inode replace mid-section.
+- B1 offline residual unchanged (docs only).
+
+### Evidence
+- Tests: R1 inode replace, concurrent serialize, R2 opaque open, R3 hang BP,
+  version 0.10.2.
+- Scripts: `adversarial_r1_inode_replace.py`, `adversarial_r2_inmemory_oracle.py`,
+  `adversarial_r3_hang_backpressure.py`.
+
+
 ## v0.10.1 — Cycle-1 adversarial harden (store MAC, lock, repair)
 
 ### P0 — Shared-store + friction_mac ordering

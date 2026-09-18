@@ -1,11 +1,11 @@
-# Smart Token Prod v0.10.1
+# Smart Token Prod v0.10.2
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.10.1** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.10.2** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -24,7 +24,7 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 11. **`sk` fuera de banda** — `.stok.key`
 12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate | repair-mac`
 
-## Contrato de producto (v0.10.1)
+## Contrato de producto (v0.10.2)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
@@ -44,8 +44,11 @@ Fases (snapshot; no se imprimen en deny):
 
 Réplicas (mismo host / disco compartido):
   FileFrictionStore + flock sobre el inode del .stok → un fail_count compartido
-  (no sidecar .lock: unlink del sidecar bypassaba la sección crítica)
+  (no sidecar .lock; writes vía fd + verificación de inode — unlink+recreate
+   del .stok bajo lock → fail-closed)
   Hosts distintos sin Redis/store de red → fuera de alcance (ver límites)
+  Hang fase 3: tope process-local SMART_TOKEN_MAX_CONCURRENT_HANGS (default 2);
+  no es límite de cluster Redis
 ```
 
 - Differentiator = **trampa lógica persistente + crypto PQ**, no Argon2 solo.
@@ -73,7 +76,7 @@ En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
 instala el paquete y usa el scaffolding:
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.1"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.2"
 smart-token integrate /ruta/al/proyecto
 ```
 
@@ -104,8 +107,10 @@ Tras hang de fase 3 el proceso no sale solo — hay que matarlo.
 
 Env: `SMART_TOKEN_ARGON2_TIME`, `SMART_TOKEN_ARGON2_MEM` (KiB),
 `SMART_TOKEN_ARGON2_PARALLELISM`. Hang de fase 3: `SMART_TOKEN_PHASE3_HANG`
-(default `1`; `0`/`false`/`off` lo desactiva). Tests también usan el
-override `_phase3_hang=False` en `open` / `open_stok`.
+(default `1`; `0`/`false`/`off` lo desactiva). Tope local de hangs concurrentes:
+`SMART_TOKEN_MAX_CONCURRENT_HANGS` (default `2`; process-local, no cluster).
+Tests también usan el override `_phase3_hang=False` en `open` / `open_stok`.
+También: `SmartTokenProd.open(..., reveal_friction=False)` opaco por defecto.
 
 ## Demo: hang silencioso vs open correcto
 
@@ -119,7 +124,7 @@ smart-token demo   # la demo desactiva hang internamente
 # 3) Mismo .stok castigado + master correcto → ladder + OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.10.1)
+## Límites de esta versión (v0.10.2)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
@@ -128,7 +133,7 @@ smart-token demo   # la demo desactiva hang internamente
 | Deuda de **cómputo / hang** viaja con el `.stok` si se copia *después* de fallar | Bloqueo de **copia limpia pre-ataque** |
 | `sk` en `.stok.key` | HSM/KMS cableado al flujo; Android / Termux |
 | Un master correcto siempre puede abrir (pagando el costo; ladder si hubo fallos) | “Destruir archivo tras N fallos” (**no**) |
-| Hang de fase 3 es best-effort en-proceso (kill = salida) | Hang a prueba de ptrace / OS scheduler abuse |
+| Hang de fase 3 best-effort + tope process-local de hangs concurrentes | Hang a prueba de ptrace; **límite multi-proceso/cluster** (no existe) |
 | Binding v2 + MAC fail-closed + flock inode en open autenticado | **B1:** offline con `sk`+master+fuente salta la máquina oficial (dureza→Argon2); sin master no hay plaintext |
 
 **Resumen:** el valor de producto es la **máquina de estados de trampa**
@@ -138,7 +143,7 @@ Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
 
 ## Estado del artefacto (honestidad operativa)
 
-- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.1`); CLI `smart-token`.
+- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.2`); CLI `smart-token`.
 - SDK (`smart_token_prod.sdk`) + `smart-token integrate` para consumidores externos.
 - Suite `tests/` y scripts bajo `scripts/` (replicas, flujo completo, costo de ataque).
 - `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como

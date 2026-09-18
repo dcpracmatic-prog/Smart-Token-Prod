@@ -120,6 +120,25 @@ def json_dumps_canonical(obj: Dict[str, Any]) -> bytes:
     return json_mod.dumps(obj, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
 
 
+# Fields safe to return on DENIED when reveal_friction=False (product API opacity).
+OPAQUE_DENY_KEYS = (
+    "path",
+    "status",
+    "binding_version",
+    "work_factor_paid",
+    "hash_iters_paid",
+)
+
+
+def public_info(info: Dict[str, Any], *, reveal_friction: bool) -> Dict[str, Any]:
+    """Strip friction/ladder oracle from DENIED responses unless owner opts in."""
+    if reveal_friction or info.get("status") != "DENIED":
+        out = dict(info)
+        out.pop("_hang", None)
+        return out
+    return {k: info[k] for k in OPAQUE_DENY_KEYS if k in info}
+
+
 # ---------------------------------------------------------------------------
 # Argon2 / KDF parameter helpers (must match between protect and open)
 # ---------------------------------------------------------------------------
@@ -377,7 +396,10 @@ class SmartTokenProd:
         provided_salt=None,
         provided_material=None,
         force_failure: bool = False,
+        *,
+        reveal_friction: bool = False,
     ) -> Tuple[Optional[bytes], Dict]:
+        """Attempt open. DENIED info is opaque unless reveal_friction=True."""
         info: Dict[str, Any] = {}
         info["binding_version"] = self.binding_version
 
@@ -401,6 +423,8 @@ class SmartTokenProd:
             MAX_TIER,
             phase3_hang_enabled,
             phase3_blocking_grind,
+            try_acquire_hang_slot,
+            release_hang_slot,
         )
         snap0 = self.friction_snapshot()
         stok_id = getattr(self, "stok_id", None) or compute_stok_id(self.pk, self.ct, self.public_label)
@@ -457,14 +481,19 @@ class SmartTokenProd:
             info["status"] = "DENIED"
             info["recoverable"] = False
             # Phase 3 / fail_count≥3: silent non-returning grind (opaque — no tier leak)
+            # Process-local backpressure: skip extra hangs when slots are full.
             if trap_should_hang(fr) and hang_on:
-                phase3_blocking_grind(
-                    stok_id=stok_id,
-                    master_secret=self._master_secret,
-                    time_cost=int(t_cost),
-                    memory_cost=int(m_cost),
-                )
-            return None, info
+                if try_acquire_hang_slot():
+                    try:
+                        phase3_blocking_grind(
+                            stok_id=stok_id,
+                            master_secret=self._master_secret,
+                            time_cost=int(t_cost),
+                            memory_cost=int(m_cost),
+                        )
+                    finally:
+                        release_hang_slot()
+            return None, public_info(info, reveal_friction=reveal_friction)
 
         # Correct master: count a validation. N fails require N+1 (cap 4).
         snap = self.friction_snapshot()
@@ -475,7 +504,7 @@ class SmartTokenProd:
             info["status"] = "DENIED"
             info["recoverable"] = False
             info["friction_state"] = self.friction_snapshot()
-            return None, info
+            return None, public_info(info, reveal_friction=reveal_friction)
 
         self.tarpit.reset()
         self._validations_ok = 0
@@ -484,7 +513,7 @@ class SmartTokenProd:
         info["status"] = "OPEN"
         info["recoverable"] = True
         info["work_factor"] = 1
-        return plaintext, info
+        return plaintext, public_info(info, reveal_friction=reveal_friction)
 
     def friction_snapshot(self) -> Dict:
         snap = dict(self.tarpit.snapshot())

@@ -1,5 +1,5 @@
 """
-Suite de pruebas — Smart Token Prod v0.10.1
+Suite de pruebas — Smart Token Prod v0.10.2
 
 Producto:
   - Differentiator = trampa lógica secuencial (fases 1→2→3) persistida en .stok
@@ -32,8 +32,11 @@ GOVERNANCE = [0, 0, 0, 1, 0, 1, 1, 1]
 @pytest.fixture(autouse=True)
 def _fast_argon2_and_no_hang():
     """Fast Argon2 for tests; disable phase-3 hang except hang-specific tests."""
+    from smart_token_prod.recovery import reset_hang_backpressure_for_tests
     os.environ["SMART_TOKEN_ARGON2_TIME"] = "1"
     os.environ["SMART_TOKEN_ARGON2_MEM"] = str(8 * 1024)
+    os.environ.pop("SMART_TOKEN_MAX_CONCURRENT_HANGS", None)
+    reset_hang_backpressure_for_tests()
     stok_mod.open_stok._argon2_time_cost = 1
     stok_mod.open_stok._argon2_memory_cost = 8 * 1024
     stok_mod.open_stok._phase3_hang = False
@@ -45,6 +48,8 @@ def _fast_argon2_and_no_hang():
     yield
     os.environ.pop("SMART_TOKEN_ARGON2_TIME", None)
     os.environ.pop("SMART_TOKEN_ARGON2_MEM", None)
+    os.environ.pop("SMART_TOKEN_MAX_CONCURRENT_HANGS", None)
+    reset_hang_backpressure_for_tests()
     for obj in (stok_mod.open_stok, STPClass.open, STPClass):
         for attr in ("_argon2_time_cost", "_argon2_memory_cost", "_phase3_hang"):
             if obj is STPClass and attr == "_phase3_hang":
@@ -71,7 +76,7 @@ def test_forced_failure_does_not_leak_payload(backend):
         GOVERNANCE, b"payload-secreto", b"master",
         tarpit_mode="off", tarpit_seconds=0.0, friction_backend=backend,
     )
-    pt, info = tok.open(force_failure=True)
+    pt, info = tok.open(force_failure=True, reveal_friction=True)
     assert pt is None
     assert info["recoverable"] is False
     assert "payload" not in info
@@ -89,29 +94,29 @@ def test_friction_phases_escalate_silently_in_snapshot(backend):
         GOVERNANCE, b"x", b"master",
         tarpit_mode="off", tarpit_seconds=0.0, friction_backend=backend,
     )
-    _, info1 = tok.open(force_failure=True)
+    _, info1 = tok.open(force_failure=True, reveal_friction=True)
     assert info1["friction_state"]["fail_count"] == 1
     assert info1["friction_state"]["cumulative_iters"] == 10_000
     assert info1["friction_state"]["recovery_tier"] == 0
     assert info1["friction_state"]["flag_fibonacci"] is True
 
-    _, info2 = tok.open(force_failure=True)
+    _, info2 = tok.open(force_failure=True, reveal_friction=True)
     assert info2["friction_state"]["fail_count"] == 2
     assert info2["friction_state"]["cumulative_iters"] == 20_000
     assert info2["friction_state"]["recovery_tier"] == 1
     assert info2["friction_state"]["flag_persistencia"] is True
 
-    _, info3 = tok.open(force_failure=True)
+    _, info3 = tok.open(force_failure=True, reveal_friction=True)
     assert info3["friction_state"]["fail_count"] == 3
     assert info3["friction_state"]["cumulative_iters"] == 30_000
     assert info3["friction_state"]["recovery_tier"] == 2
     assert info3["friction_state"]["tarpit_triggered"] is True
 
-    _, info4 = tok.open(force_failure=True)
+    _, info4 = tok.open(force_failure=True, reveal_friction=True)
     assert info4["friction_state"]["cumulative_iters"] == 40_000
     assert info4["friction_state"]["recovery_tier"] == 3
 
-    _, info5 = tok.open(force_failure=True)
+    _, info5 = tok.open(force_failure=True, reveal_friction=True)
     assert info5["friction_state"]["cumulative_iters"] == 50_000
     assert info5["friction_state"]["recovery_tier"] == 3
 
@@ -143,7 +148,7 @@ def test_one_correct_open_after_tier3_works():
 def test_tampered_ciphertext_fails_aes_gcm():
     tok = SmartTokenProd(GOVERNANCE, b"payload-secreto", b"master", friction_backend="python")
     tok.ciphertext = bytes([tok.ciphertext[0] ^ 0xFF]) + tok.ciphertext[1:]
-    pt, info = tok.open()
+    pt, info = tok.open(reveal_friction=True)
     assert pt is None
     assert info["aes_gcm_ok"] is False
 
@@ -956,3 +961,188 @@ def test_opaque_deny_has_no_oracle_channels(tmp_path):
         "friction_mac_ok", "friction_before", "recoverable",
     ):
         assert banned not in info
+
+
+# ---------------------------------------------------------------------------
+# v0.10.2 — cycle-2 adversarial: R1 inode replace, R2 in-memory opaque, R3 hang BP
+# ---------------------------------------------------------------------------
+
+
+def test_r1_stok_unlink_recreate_fails_closed_under_lock(tmp_path):
+    """Unlink+recreate .stok under exclusive_stok → new inode → fail-closed on write."""
+    import os
+    import threading
+    import time
+    from smart_token_prod.stok import protect_file, exclusive_stok, read_stok, write_stok
+
+    sample = tmp_path / "r1.stl"
+    sample.write_bytes(b"r1-payload")
+    stok_path, _ = protect_file(
+        sample, master_secret=b"r1-m", tarpit_mode="off", friction_backend="python"
+    )
+    st0 = os.stat(stok_path)
+    events = []
+
+    def holder():
+        with exclusive_stok(stok_path) as lock:
+            events.append(("held", lock.inode_tuple()))
+            time.sleep(0.35)
+            try:
+                s = read_stok(stok_path, lock=lock)
+                s.friction_snapshot = dict(s.friction_snapshot or {})
+                s.friction_snapshot["fail_count"] = 99
+                write_stok(s, stok_path, lock=lock)
+                events.append("write_ok_unexpected")
+            except RuntimeError as e:
+                msg = str(e).lower()
+                events.append(("write_fail", ("inode" in msg or "replaced" in msg or "unlinked" in msg)))
+
+    def attacker():
+        time.sleep(0.05)
+        raw = stok_path.read_bytes()
+        stok_path.unlink()
+        stok_path.write_bytes(raw)  # new inode at same path
+        st1 = os.stat(stok_path)
+        events.append(("replaced", (st0.st_dev, st0.st_ino) != (st1.st_dev, st1.st_ino)))
+
+    th = threading.Thread(target=holder)
+    ta = threading.Thread(target=attacker)
+    th.start(); ta.start(); th.join(); ta.join()
+    assert any(isinstance(e, tuple) and e[0] == "replaced" and e[1] for e in events), events
+    assert any(isinstance(e, tuple) and e[0] == "write_fail" and e[1] for e in events), events
+    assert "write_ok_unexpected" not in events
+
+
+def test_r1_concurrent_open_stok_still_serialized(tmp_path):
+    """Without unlink, two open_stok writers serialize on the same inode."""
+    import threading
+    import time
+    from smart_token_prod.stok import protect_file, open_stok, friction_status
+
+    sample = tmp_path / "ser.stl"
+    sample.write_bytes(b"ser")
+    master = b"ser-m"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    barrier = threading.Barrier(2)
+    order = []
+
+    def worker(tag):
+        barrier.wait()
+        open_stok(stok_path, master_secret=b"bad-" + tag.encode(), key_path=key_path)
+        order.append(tag)
+
+    t1 = threading.Thread(target=worker, args=("a",))
+    t2 = threading.Thread(target=worker, args=("b",))
+    t1.start(); t2.start(); t1.join(); t2.join()
+    assert len(order) == 2
+    assert friction_status(stok_path)["friction_snapshot"]["fail_count"] == 2
+
+
+def test_r2_smarttokenprod_open_denied_opaque_by_default():
+    """In-memory SmartTokenProd.open must not oracle ladder details on DENIED."""
+    tok = SmartTokenProd(
+        GOVERNANCE, b"opaque-mem", b"master",
+        tarpit_mode="off", friction_backend="python",
+    )
+    pt, info = tok.open(force_failure=True)
+    assert pt is None and info["status"] == "DENIED"
+    for k in (
+        "fail_count", "recovery_tier", "work_factor", "cumulative_iters",
+        "friction_state", "friction", "recoverable", "mlkem_ok", "aes_gcm_ok",
+    ):
+        assert k not in info, f"in-memory opaque leak: {k}"
+    assert set(info.keys()) <= {
+        "path", "status", "binding_version", "work_factor_paid", "hash_iters_paid",
+    }
+
+    _, rich = tok.open(force_failure=True, reveal_friction=True)
+    assert "friction_state" in rich
+    assert rich["friction_state"]["fail_count"] >= 1
+
+
+def test_r3_hang_backpressure_skips_extra_grind(tmp_path):
+    """When process-local hang slots are full, open_stok DENIED returns without hanging."""
+    import time
+    from smart_token_prod.stok import protect_file, open_stok
+    from smart_token_prod.recovery import (
+        try_acquire_hang_slot,
+        release_hang_slot,
+        reset_hang_backpressure_for_tests,
+        hang_slots_available,
+    )
+
+    os.environ["SMART_TOKEN_MAX_CONCURRENT_HANGS"] = "1"
+    reset_hang_backpressure_for_tests()
+    assert try_acquire_hang_slot() is True
+    assert hang_slots_available() == 0
+    assert try_acquire_hang_slot() is False
+
+    sample = tmp_path / "hangbp.stl"
+    sample.write_bytes(b"hangbp")
+    master = b"hangbp-m"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    # Two fails with hang off (fixture); third wrong with hang ON should try hang then skip
+    open_stok(stok_path, master_secret=b"w1", key_path=key_path)
+    open_stok(stok_path, master_secret=b"w2", key_path=key_path)
+    stok_mod.open_stok._phase3_hang = True
+    t0 = time.time()
+    pt, info = open_stok(stok_path, master_secret=b"w3", key_path=key_path)
+    elapsed = time.time() - t0
+    assert pt is None and info["status"] == "DENIED"
+    assert elapsed < 1.5, f"expected skip hang under backpressure, took {elapsed:.2f}s"
+    release_hang_slot()
+    reset_hang_backpressure_for_tests()
+
+
+def test_version_is_0102():
+    from smart_token_prod import __version__
+    assert __version__ == "0.10.2"
+
+
+def test_r1_open_stok_inode_race_returns_opaque_denied(tmp_path):
+    """Path replace mid-open must not crash the API — opaque DENIED fail-closed."""
+    import os
+    import threading
+    import time
+    from smart_token_prod.stok import protect_file, open_stok, exclusive_stok
+
+    sample = tmp_path / "race.stl"
+    sample.write_bytes(b"race")
+    master = b"race-m"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    results = []
+
+    def slow_holder():
+        # Hold lock so open_stok blocks, then replace path before release
+        with exclusive_stok(stok_path) as lock:
+            time.sleep(0.05)
+            raw = lock.read_all()
+            # Replace path while we still hold old inode
+            stok_path.unlink()
+            stok_path.write_bytes(raw)
+            time.sleep(0.2)
+
+    def opener():
+        time.sleep(0.02)
+        try:
+            pt, info = open_stok(stok_path, master_secret=b"wrong", key_path=key_path)
+            results.append((pt, info))
+        except Exception as e:
+            results.append(("EXC", type(e).__name__, str(e)))
+
+    th = threading.Thread(target=slow_holder)
+    to = threading.Thread(target=opener)
+    th.start(); to.start(); th.join(); to.join()
+    assert results, "opener produced no result"
+    # Either waited and opened the NEW inode (DENIED normal) or hit race → DENIED
+    r = results[0]
+    assert r[0] != "EXC", f"API must not crash on inode race: {r}"
+    pt, info = r
+    assert pt is None and info.get("status") == "DENIED"
+    assert "friction_state" not in info

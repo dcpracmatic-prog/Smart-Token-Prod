@@ -1,4 +1,4 @@
-# Modelo de amenazas — Smart Token Prod (v0.10.1)
+# Modelo de amenazas — Smart Token Prod (v0.10.2)
 
 Estado: **borrador técnico interno**. Esto NO sustituye una auditoría de
 seguridad independiente — es el punto de partida que un auditor necesitaría
@@ -6,7 +6,7 @@ para empezar a trabajar, y el mínimo que cualquier cliente serio va a pedir
 antes de confiar en el sistema.
 
 
-## 0. Contrato de integridad de fricción (v0.10.1)
+## 0. Contrato de integridad de fricción (v0.10.2)
 
 - La trampa lógica (fases / ladder / hang) en el path oficial
   (`open_stok` / SDK) solo opera sobre un `friction_snapshot` con
@@ -21,11 +21,15 @@ antes de confiar en el sistema.
   se mergea después (evita DoS fail-closed por store≻disk).
 - Tras bitrot/tamper de MAC: dueño re-firma con `repair_friction_mac`
   (deuda intacta); no hay OPEN gratis.
-- Lock de open: flock del inode `.stok` (no sidecar unlink-bypass).
-- Denegaciones API opacas por defecto (`reveal_friction=False`); la
-  inspección de deuda es `friction_status` / CLI `status` / opt-in.
-- Hang de fase 3: clave de decisión = **`fail_count >= 3`** (no
-  `recovery_tier >= 3`).
+- Lock de open: flock del inode `.stok` + writes vía fd + verificación
+  `(dev,ino)` (unlink+recreate del path bajo lock → fail-closed; no
+  sidecar).
+- Denegaciones API opacas por defecto (`reveal_friction=False`) en
+  `open_stok` **y** `SmartTokenProd.open`; inspección =
+  `friction_status` / CLI `status` / opt-in.
+- Hang de fase 3: clave = **`fail_count >= 3`**. Tope process-local
+  `SMART_TOKEN_MAX_CONCURRENT_HANGS` (default 2); **no** hay backpressure
+  distribuido Redis/cluster.
 - **B1 residual:** con `sk`+master+fuente, un atacante puede
   reimplementar decaps+KDF+AES offline y omitir la máquina de estados;
   la dureza cae a Argon2. El producto **no** afirma lo contrario. La
@@ -61,19 +65,15 @@ Detalle de remediación: `docs/AUDIT_REMEDIATION.md`.
   `scripts/validate_replicas.py`. Réplicas en máquinas distintas siguen
   necesitando Redis (`RedisFrictionStore`) u otro store de red; si cada
   host tiene su propio disco, el atacante otra vez parte los intentos.
-- **Denegación de servicio (DoS) propia**: el tarpit de CPU consume ciclos
-  del *servidor*, no solo del atacante. A volumen suficiente de intentos
-  fallidos concurrentes, el propio mecanismo defensivo puede degradar el
-  servicio. Falta un límite de tarpits concurrentes y/o backpressure.
-  **Medido** (`benchmarks/bench_tarpit_concurrency.py`, 8 tarpits en
-  paralelo, 0.3s cada uno): el backend Python degrada a ~0.66s de pared
-  (~2.2x el ideal) por contención del GIL; el backend nativo C++ se
-  mantiene en ~0.36s (~1.2x el ideal) porque `ctypes` libera el GIL
-  durante la llamada nativa. Conclusión práctica: en producción con
-  fallos concurrentes reales, usar `friction_backend="native"` no es
-  solo una optimización — reduce directamente la superficie de auto-DoS.
-  Aun así, ninguno de los dos backends tiene un límite duro de tarpits
-  concurrentes; eso sigue pendiente.
+- **Denegación de servicio (DoS) propia**: el tarpit/hang consume ciclos
+  del *servidor*. v0.10.2 añade tope **process-local** de hangs
+  concurrentes (`SMART_TOKEN_MAX_CONCURRENT_HANGS`, default 2): slots
+  llenos → DENIED sin entrar en otro grind infinito (fricción ya
+  persistida). **Residual:** multi-proceso / multi-host sin store
+  compartido y sin límite externo siguen pudiendo saturar CPU; no hay
+  semáforo Redis/cluster. **Medido** (`benchmarks/bench_tarpit_concurrency.py`):
+  Python ~2.2x wall bajo contención GIL; native ~1.2x — preferir
+  `friction_backend="native"` en producción.
 - **Replay de mensajes legítimos**: no hay nonce/timestamp de aplicación a
   nivel de protocolo que impida reproducir una apertura legítima capturada
   (el nonce de AES-GCM protege el cifrado, no evita el replay del mensaje

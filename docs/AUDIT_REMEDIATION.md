@@ -1,4 +1,4 @@
-# Remediación de auditoría — Smart Token Prod v0.10.1
+# Remediación de auditoría — Smart Token Prod v0.10.2
 
 Documento en español. Resume qué fallaba en la narrativa vs. el código,
 qué cambió en **0.10.0**, cómo la evidencia respalda el contrato, y el
@@ -125,3 +125,19 @@ Hallazgos bajo ataque hostil tras 0.10.0:
 | A1/A2/D1/D2 | — | HOLD bajo re-ataque |
 | B1 offline sk+master+fuente | residual | NO eliminable sin rediseño |
 
+
+
+## Cycle 2 adversarial (v0.10.2)
+
+Hallazgos bajo re-ataque tras 0.10.1:
+
+| ID | Severidad | Estado |
+|----|-----------|--------|
+| R1 `.stok` unlink+recreate (new inode) + path write | P0 | FIXED — StokLock fd write + inode verify |
+| R2 `SmartTokenProd.open` ladder oracle | P0 | FIXED — `reveal_friction=False` default |
+| R3 hang/tarpit concurrency self-DoS | P1 | FIXED best-effort local semaphore; residual multi-proc/cluster documented |
+| A1/A2/S1–S5 | — | HOLD bajo re-ataque cycle 3 |
+| B1 offline sk+master+fuente | residual | NO eliminable sin rediseño |
+
+Scripts: `scripts/adversarial_r1_inode_replace.py`,
+`adversarial_r2_inmemory_oracle.py`, `adversarial_r3_hang_backpressure.py`.

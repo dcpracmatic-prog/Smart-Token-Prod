@@ -17,7 +17,7 @@ editable) y usar la API pública / CLI `smart-token integrate`.
 ### Desde git (recomendado en CI / otros repos)
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.1"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.2"
 ```
 
 O imprime la línea con:
@@ -120,7 +120,7 @@ CLI: `protect`/`open` exigen `--master` o `SMART_TOKEN_MASTER`. API DENIED opaca
 5. Quitar `PYTHONPATH=vendor:.` (o fragmentos equivalentes) **solo**
    usados para STP.
 6. `smart-token doctor` y una smoke de protect/open en un archivo de prueba.
-7. Actualizar CI para `pip install` la dep (tag `@v0.10.1` o editable en
+7. Actualizar CI para `pip install` la dep (tag `@v0.10.2` o editable en
    monorepo local).
 
 ## Límites (honestidad)
