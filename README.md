@@ -1,3 +1,5 @@
+[![CI](https://github.com/dcpracmatic-prog/Smart-Token-Prod/actions/workflows/ci.yml/badge.svg)](https://github.com/dcpracmatic-prog/Smart-Token-Prod/actions/workflows/ci.yml)
+
 # Smart Token Prod v0.10.4
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
