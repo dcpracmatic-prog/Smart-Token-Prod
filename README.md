@@ -1,11 +1,11 @@
-# Smart Token Prod v0.10.3
+# Smart Token Prod v0.10.4
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.10.3** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.10.4** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -24,7 +24,7 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 11. **`sk` fuera de banda** — `.stok.key`
 12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate | repair-mac`
 
-## Contrato de producto (v0.10.3)
+## Contrato de producto (v0.10.4)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
@@ -83,7 +83,7 @@ En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
 instala el paquete y usa el scaffolding:
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.3"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.4"
 smart-token integrate /ruta/al/proyecto
 ```
 
@@ -131,7 +131,7 @@ smart-token demo   # la demo desactiva hang internamente
 # 3) Mismo .stok castigado + master correcto → ladder + OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.10.3)
+## Límites de esta versión (v0.10.4)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|

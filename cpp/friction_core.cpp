@@ -1,6 +1,7 @@
 #include "friction_core.hpp"
 #include <cmath>
 #include <algorithm>
+#include <cstring>  // memcpy/memset were used transitively before
 
 // Minimal SHA-256 (public domain style) for self-contained build
 namespace {
@@ -124,8 +125,24 @@ void SequentialTarpit::mutate_key(const uint8_t* key, int n, uint8_t out[32]) {
     uint8_t buf[32 + 16 + 9];
     memcpy(buf, key, 32);
     uint64_t f = fib(n);
-    for (int i = 0; i < 16; ++i)
-        buf[32 + i] = (f >> (8 * (15 - i))) & 0xff;
+    // 16-byte big-endian encoding of f, matching the reference Python
+    // implementation's fib(n).to_bytes(16, "big") in core.py.
+    //
+    // This loop used to run `buf[32 + i] = (f >> (8 * (15 - i))) & 0xff;` for
+    // all 16 bytes. For i < 8 that shifts a 64-bit value by 64..120 bits, which
+    // is undefined behaviour; UBSan reports "shift exponent 120 is too large
+    // for 64-bit type". On x86 with gcc the shift count wraps modulo 64, so the
+    // high 8 bytes came out as a copy of the low 8 bytes instead of zero, and
+    // the native backend derived a DIFFERENT working_key from the Python
+    // backend for the same input. No test covered that, so the documented
+    // cross-backend parity did not actually hold whenever libfriction.so was
+    // loaded.
+    //
+    // f is uint64_t, so the top 8 bytes of a 16-byte big-endian encoding are
+    // zero by construction.
+    memset(buf + 32, 0, 8);
+    for (int i = 0; i < 8; ++i)
+        buf[32 + 8 + i] = static_cast<uint8_t>((f >> (8 * (7 - i))) & 0xff);
     memcpy(buf + 48, "|FRICTION", 9);
     sha256(buf, 32 + 16 + 9, out);
 }

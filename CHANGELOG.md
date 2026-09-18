@@ -1,5 +1,35 @@
 # Changelog
 
+## v0.10.4 — fix undefined behaviour in the native `mutate_key` (cross-backend parity)
+
+`SequentialTarpit::mutate_key` built the 16-byte big-endian encoding of
+`fib(n)` with `buf[32 + i] = (f >> (8 * (15 - i))) & 0xff` across all 16
+bytes, but `f` is a `uint64_t`. For the top 8 bytes that shifts by 64..120
+bits, which is undefined behaviour — UBSan reports "shift exponent 120 is too
+large for 64-bit type".
+
+On x86 with gcc the shift count wraps modulo 64, so the high 8 bytes came out
+as a **copy of the low 8** instead of zero. Python's
+`fib(n).to_bytes(16, "big")` zero-pads, so once `libfriction.so` was loaded the
+native backend derived a **different `working_key`** from the reference Python
+implementation for the same inputs. The README and integration docs claimed the
+two backends agree on friction state and `working_key` after the second
+failure; no test covered it, and the claim was false on any host with the
+native core.
+
+- `cpp/friction_core.cpp`: zero the high 8 bytes explicitly and shift only
+  within range. Adds the missing `<cstring>` include (`memcpy`/`memset` were
+  resolved transitively).
+- `tests/test_native_python_parity.py`: new suite pinning the encoding and the
+  end-to-end agreement across several base keys and both tarpit modes. It skips
+  honestly when the native library is absent rather than reporting a pass that
+  proves nothing. Verified to fail (5 of 7) against the pre-fix `.so`.
+
+No format change and no key-derivation change on pure-Python hosts. Hosts that
+were running the native core and had already accumulated ≥2 failures on an
+artifact will now compute the Python-defined `working_key`; re-derivation is
+deterministic from `base_key`, so nothing needs migrating.
+
 ## v0.10.3 — P0: rebind AAD to the on-disk `public_label`
 
 ### P0 — tampered `public_label` decrypted cleanly with `status=OPEN`
