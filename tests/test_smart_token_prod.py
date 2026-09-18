@@ -1,15 +1,16 @@
 """
-Suite de pruebas — Smart Token Prod v0.10.0
+Suite de pruebas — Smart Token Prod v0.10.1
 
 Producto:
   - Differentiator = trampa lógica secuencial (fases 1→2→3) persistida en .stok
   - Argon2id endurece esa trampa (no la reemplaza)
   - Denegaciones opacas (sin anunciar tier en stdout de deny)
-  - tier≥3 + wrong master → bucle bloqueante que no retorna
+  - fail_count≥3 + wrong master → bucle bloqueante que no retorna
   - Master correcto a cualquier tier → OPEN + reset; archivo nunca destruido
 """
 
 import hashlib
+from pathlib import Path
 import multiprocessing
 import os
 import time
@@ -393,7 +394,7 @@ def test_stok_without_key_fails(tmp_path):
 
 
 def test_stok_no_wall_tarpit_before_phase3_hang(tmp_path):
-    """Before tier≥3 hang, fail at tier 2 must not burn ~1.5s wall fib."""
+    """Before fail_count≥3 hang, fail at fc=2 must not burn ~1.5s wall fib."""
     from smart_token_prod.stok import protect_file, open_stok
 
     sample = tmp_path / "fast.stl"
@@ -412,7 +413,7 @@ def test_stok_no_wall_tarpit_before_phase3_hang(tmp_path):
 
 
 def _hang_worker(stok_path: str, key_path: str, master_wrong: bytes, ready_q):
-    """Child process: enable hang, wrong open at tier≥3 — must not return."""
+    """Child process: enable hang, wrong open at fail_count≥3 — must not return."""
     os.environ["SMART_TOKEN_PHASE3_HANG"] = "1"
     from smart_token_prod import stok as sm
     # Clear test overrides if any; force hang ON and fast argon2
@@ -431,7 +432,7 @@ def _hang_worker(stok_path: str, key_path: str, master_wrong: bytes, ready_q):
 
 def test_wrong_open_at_tier3_hangs_in_subprocess(tmp_path):
     """
-    Wrong open at tier≥3: process stays alive/busy and does not return
+    Wrong open at fail_count≥3: process stays alive/busy and does not return
     success within ~2–3s (assert hang).
     """
     from smart_token_prod.stok import protect_file, open_stok, friction_status, read_stok
@@ -811,3 +812,147 @@ def test_cli_protect_open_require_master(tmp_path, capsys):
     assert rc == 2
     err = capsys.readouterr().err
     assert "SMART_TOKEN_MASTER" in err or "--master" in err
+
+
+# ---------------------------------------------------------------------------
+# v0.10.1 — cycle-1 adversarial: store≻disk MAC, lock unlink, repair-mac
+# ---------------------------------------------------------------------------
+
+
+def test_store_harsher_than_disk_does_not_break_mac(tmp_path):
+    """MAC must be checked on disk snapshot; harsher store must not fail-closed DoS."""
+    import os
+    from smart_token_prod.stok import protect_file, open_stok, read_stok
+    from smart_token_prod.persistence import FileFrictionStore
+    from smart_token_prod.recovery import compute_stok_id
+
+    sample = tmp_path / "storemac.stl"
+    sample.write_bytes(b"store-mac-payload")
+    master = b"store-mac-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    fric = tmp_path / "fric"
+    fric.mkdir()
+    os.environ["SMART_TOKEN_FRICTION_DIR"] = str(fric)
+    try:
+        open_stok(stok_path, master_secret=b"wrong", key_path=key_path)
+        st = read_stok(stok_path)
+        assert int(st.friction_snapshot["fail_count"]) == 1
+        sid = compute_stok_id(st.pk, st.ct, st.public_label)
+        poison = dict(st.friction_snapshot)
+        poison["fail_count"] = 5
+        poison["cumulative_iters"] = 50_000
+        poison["recovery_tier"] = 3
+        FileFrictionStore(fric).save(sid, poison)
+
+        # Correct master must NOT be blocked by friction_mac_invalid
+        statuses = []
+        last_pt = None
+        for _ in range(4):  # fc=5 → need 4 validations
+            pt, info = open_stok(
+                stok_path, master_secret=master, key_path=key_path, reveal_friction=True
+            )
+            assert info.get("friction_mac_ok") is not False
+            assert info.get("integrity_error") != "friction_mac_invalid"
+            statuses.append(info["status"])
+            last_pt = pt
+        assert statuses[-1] == "OPEN"
+        assert last_pt == b"store-mac-payload"
+    finally:
+        os.environ.pop("SMART_TOKEN_FRICTION_DIR", None)
+
+
+def test_exclusive_stok_survives_sidecar_unlink(tmp_path):
+    """Unlinking a legacy sidecar .lock must not bypass inode flock."""
+    import threading
+    import time
+    from smart_token_prod.stok import protect_file, exclusive_stok
+
+    sample = tmp_path / "lock.stl"
+    sample.write_bytes(b"lock")
+    stok_path, _ = protect_file(
+        sample, master_secret=b"m", tarpit_mode="off", friction_backend="python"
+    )
+    # Create legacy sidecar to prove unlink is irrelevant
+    sidecar = Path(str(stok_path) + ".lock")
+    sidecar.write_bytes(b"x")
+    events = []
+
+    def holder():
+        with exclusive_stok(stok_path):
+            events.append("held")
+            time.sleep(0.5)
+            events.append("released")
+
+    def attacker():
+        time.sleep(0.05)
+        if sidecar.exists():
+            sidecar.unlink()
+            events.append("unlinked")
+        t0 = time.time()
+        with exclusive_stok(stok_path):
+            waited = time.time() - t0
+            events.append(("entered", round(waited, 3), "released" in events))
+
+    th = threading.Thread(target=holder)
+    ta = threading.Thread(target=attacker)
+    th.start(); ta.start(); th.join(); ta.join()
+    entered = [e for e in events if isinstance(e, tuple) and e[0] == "entered"][0]
+    assert entered[1] >= 0.3, f"expected wait for inode lock, got {events}"
+    assert entered[2] is True, f"entered before holder released: {events}"
+
+
+def test_repair_mac_restores_open_without_clearing_debt(tmp_path):
+    """After MAC bit-flip, repair-mac re-signs; ladder debt remains; OPEN needs validations."""
+    from smart_token_prod.stok import (
+        protect_file, open_stok, friction_status, repair_friction_mac, read_stok,
+    )
+
+    sample = tmp_path / "repair.stl"
+    sample.write_bytes(b"repair-payload")
+    master = b"repair-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    for i in range(2):
+        open_stok(stok_path, master_secret=b"bad" + bytes([i]), key_path=key_path)
+    assert friction_status(stok_path)["friction_snapshot"]["fail_count"] == 2
+
+    # Tamper MAC → fail-closed
+    st = read_stok(stok_path)
+    b = bytearray(st.friction_mac); b[0] ^= 0x01; st.friction_mac = bytes(b)
+    from smart_token_prod.stok import write_stok
+    write_stok(st, stok_path)
+    pt, info = open_stok(stok_path, master_secret=master, key_path=key_path, reveal_friction=True)
+    assert pt is None and info.get("friction_mac_ok") is False
+
+    info_r = repair_friction_mac(stok_path, key_path=key_path)
+    assert info_r["status"] == "REPAIRED"
+    assert info_r["fail_count"] == 2
+
+    statuses = []
+    for _ in range(3):
+        pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+        statuses.append(info["status"])
+    assert statuses == ["DENIED", "DENIED", "OPEN"]
+    assert pt == b"repair-payload"
+
+
+def test_opaque_deny_has_no_oracle_channels(tmp_path):
+    """DENIED opaque surface must not leak integrity/mlkem/aes oracles either."""
+    from smart_token_prod.stok import protect_file, open_stok, _OPAQUE_DENY_KEYS
+
+    sample = tmp_path / "oracle.stl"
+    sample.write_bytes(b"o")
+    master = b"oracle-m"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    _, info = open_stok(stok_path, master_secret=b"wrong", key_path=key_path)
+    assert set(info.keys()) <= set(_OPAQUE_DENY_KEYS)
+    for banned in (
+        "mlkem_ok", "mlkem_error", "aes_error", "integrity_error",
+        "friction_mac_ok", "friction_before", "recoverable",
+    ):
+        assert banned not in info

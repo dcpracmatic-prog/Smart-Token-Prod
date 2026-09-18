@@ -42,7 +42,7 @@ def _require_stack() -> None:
             "Smart Token Prod stack unavailable — missing/broken deps: "
             + ", ".join(missing)
             + ". Install with: pip install 'smart-token-prod @ "
-            "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.9.0'"
+            "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.1'"
         )
 
 
@@ -158,3 +158,17 @@ def artifact_friction_status(path: PathLike) -> Dict[str, Any]:
     from .stok import friction_status
 
     return friction_status(path)
+
+
+def repair_artifact_mac(
+    path: PathLike,
+    *,
+    key_path: PathLike | None = None,
+    sk: Optional[bytes] = None,
+) -> Dict[str, Any]:
+    """Owner: re-MAC friction_snapshot after tamper/bitrot. Debt preserved."""
+    _require_stack()
+    from .stok import repair_friction_mac
+
+    return repair_friction_mac(path, sk=sk, key_path=key_path)
+

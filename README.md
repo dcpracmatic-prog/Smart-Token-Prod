@@ -1,11 +1,11 @@
-# Smart Token Prod v0.10.0
+# Smart Token Prod v0.10.1
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.10.0** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.10.1** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -22,9 +22,9 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 9. **FrictionStore compartido (v0.8.2)** — `FileFrictionStore` + flock / lock de `.stok`; réplicas en el mismo disco suman el mismo `fail_count`
 10. **Núcleo C++** — `libfriction.so` + FFI opcional (`auto`/`native`/`python`)
 11. **`sk` fuera de banda** — `.stok.key`
-12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate`
+12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate | repair-mac`
 
-## Contrato de producto (v0.10.0)
+## Contrato de producto (v0.10.1)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
@@ -43,7 +43,8 @@ Fases (snapshot; no se imprimen en deny):
   fail 3+ → fase 3 (tarpit_triggered); tier salta @11k/22k/33k cum iters (máx 3)
 
 Réplicas (mismo host / disco compartido):
-  FileFrictionStore + flock + archivo.stok.lock → un fail_count compartido
+  FileFrictionStore + flock sobre el inode del .stok → un fail_count compartido
+  (no sidecar .lock: unlink del sidecar bypassaba la sección crítica)
   Hosts distintos sin Redis/store de red → fuera de alcance (ver límites)
 ```
 
@@ -72,7 +73,7 @@ En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
 instala el paquete y usa el scaffolding:
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.1"
 smart-token integrate /ruta/al/proyecto
 ```
 
@@ -118,7 +119,7 @@ smart-token demo   # la demo desactiva hang internamente
 # 3) Mismo .stok castigado + master correcto → ladder + OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.10.0)
+## Límites de esta versión (v0.10.1)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
@@ -128,7 +129,7 @@ smart-token demo   # la demo desactiva hang internamente
 | `sk` en `.stok.key` | HSM/KMS cableado al flujo; Android / Termux |
 | Un master correcto siempre puede abrir (pagando el costo; ladder si hubo fallos) | “Destruir archivo tras N fallos” (**no**) |
 | Hang de fase 3 es best-effort en-proceso (kill = salida) | Hang a prueba de ptrace / OS scheduler abuse |
-| Binding v2 + MAC fail-closed en open autenticado | Offline con `sk`+fuente: re-MAC/reset friction (salta tarpit oficial; sin master no hay plaintext) |
+| Binding v2 + MAC fail-closed + flock inode en open autenticado | **B1:** offline con `sk`+master+fuente salta la máquina oficial (dureza→Argon2); sin master no hay plaintext |
 
 **Resumen:** el valor de producto es la **máquina de estados de trampa**
 persistente + PQ crypto; Argon2 es el endurecimiento commodity de cada intento.
@@ -137,7 +138,7 @@ Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
 
 ## Estado del artefacto (honestidad operativa)
 
-- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.0`); CLI `smart-token`.
+- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.1`); CLI `smart-token`.
 - SDK (`smart_token_prod.sdk`) + `smart-token integrate` para consumidores externos.
 - Suite `tests/` y scripts bajo `scripts/` (replicas, flujo completo, costo de ataque).
 - `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como

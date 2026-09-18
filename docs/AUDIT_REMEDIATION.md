@@ -1,4 +1,4 @@
-# Remediación de auditoría — Smart Token Prod v0.10.0
+# Remediación de auditoría — Smart Token Prod v0.10.1
 
 Documento en español. Resume qué fallaba en la narrativa vs. el código,
 qué cambió en **0.10.0**, cómo la evidencia respalda el contrato, y el
@@ -109,3 +109,19 @@ atan a la ruta autenticada anterior.
 0.10.0 no es greenwashing: cierra el bypass A1, hace opaca la API como
 se anunciaba, elimina footguns D1/D2, alinea hang (D3), y admite B1 sin
 vaciar fases/ladder/hang.
+
+
+## Cycle 1 adversarial (v0.10.1)
+
+Hallazgos bajo ataque hostil tras 0.10.0:
+
+| ID | Severidad | Estado |
+|----|-----------|--------|
+| S1 store≻disk MAC DoS | P0 | FIXED — MAC sobre disk_snap; merge después |
+| S2 sidecar lock unlink | P0 | FIXED — flock inode `.stok` |
+| S3 MAC tamper owner DoS | P1 | FIXED — `repair_friction_mac` / CLI `repair-mac` |
+| S4 sdk pin v0.9.0 | P2 | FIXED → v0.10.1 |
+| S5 integrate CLI traceback | P2 | FIXED — catch ValueError |
+| A1/A2/D1/D2 | — | HOLD bajo re-ataque |
+| B1 offline sk+master+fuente | residual | NO eliminable sin rediseño |
+

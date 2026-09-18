@@ -1,5 +1,38 @@
 # Changelog
 
+## v0.10.1 — Cycle-1 adversarial harden (store MAC, lock, repair)
+
+### P0 — Shared-store + friction_mac ordering
+- **Bug (0.10.0):** MAC was verified over `merge_friction(disk, store)`. A
+  harsher shared store (Redis/broker/`SMART_TOKEN_FRICTION_DIR`) vs a valid
+  on-disk snapshot made `friction_mac` fail → fail-closed **DoS of the owner**
+  and broke multi-replica stale-disk opens.
+- **Fix:** verify MAC against the **on-disk** snapshot only; merge store only
+  after authenticity. Escalation via harsher store still applies when MAC ok.
+
+### P0 — Lock unlink race
+- **Bug:** `exclusive_stok` flocked a sidecar `.stok.lock`. Unlink + recreate
+  bypassed the critical section (concurrent writers).
+- **Fix:** advisory `flock` on the **`.stok` data inode** itself.
+
+### P1 — Owner recovery from MAC tamper DoS
+- Fail-closed MAC remains; owner with `sk` can `repair_friction_mac` /
+  `smart-token repair-mac` / `sdk.repair_artifact_mac` to re-sign current
+  debt **without** clearing ladder/hang state.
+
+### P2 — Consistency
+- SDK install hint pinned to **v0.10.1** (was stale v0.9.0).
+- CLI `integrate` catches bridge path `ValueError` (exit 2) instead of traceback.
+- Hang comments aligned to `fail_count >= 3` (not tier).
+
+### B1 residual (unchanged, honest)
+- Offline `sk`+master+source bypass of the state machine remains; product
+  claims stay on the authenticated `open_stok` / SDK path.
+
+### Evidence
+- New tests: store≻disk MAC, lock unlink, repair-mac, CLI integrate escape,
+  opaque deny keys, version 0.10.1.
+
 ## v0.10.0 — Fail-closed friction MAC + opaque API deny
 
 ### P0 — A1 MAC fail-closed (logical design preserved)

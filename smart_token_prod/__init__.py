@@ -1,5 +1,5 @@
 from .core import SmartTokenProd, PublicView, SequentialTarpit, governance_fingerprint
-from .stok import protect_file, open_stok, read_stok, write_stok, friction_status, StokFile
+from .stok import protect_file, open_stok, read_stok, write_stok, friction_status, repair_friction_mac, StokFile
 from .persistence import FrictionStore, FileFrictionStore, InMemoryFrictionStore, PersistentTarpit
 from .sdk import (
     is_available,
@@ -7,9 +7,10 @@ from .sdk import (
     protect_artifact,
     open_artifact,
     artifact_friction_status,
+    repair_artifact_mac,
 )
 
-__version__ = "0.10.0"
+__version__ = "0.10.1"
 __all__ = [
     "SmartTokenProd",
     "PublicView",
@@ -20,11 +21,13 @@ __all__ = [
     "read_stok",
     "write_stok",
     "friction_status",
+    "repair_friction_mac",
     "StokFile",
     "is_available",
     "status",
     "protect_artifact",
     "open_artifact",
     "artifact_friction_status",
+    "repair_artifact_mac",
     "__version__",
 ]

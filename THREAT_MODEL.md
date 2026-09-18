@@ -1,4 +1,4 @@
-# Modelo de amenazas — Smart Token Prod (v0.10.0)
+# Modelo de amenazas — Smart Token Prod (v0.10.1)
 
 Estado: **borrador técnico interno**. Esto NO sustituye una auditoría de
 seguridad independiente — es el punto de partida que un auditor necesitaría
@@ -6,7 +6,7 @@ para empezar a trabajar, y el mínimo que cualquier cliente serio va a pedir
 antes de confiar en el sistema.
 
 
-## 0. Contrato de integridad de fricción (v0.10.0)
+## 0. Contrato de integridad de fricción (v0.10.1)
 
 - La trampa lógica (fases / ladder / hang) en el path oficial
   (`open_stok` / SDK) solo opera sobre un `friction_snapshot` con
@@ -17,6 +17,11 @@ antes de confiar en el sistema.
   open gratis).
 - Open sin `sk`/`ss`: DENY de solo lectura (sin mutar friction; no hay
   re-MAC íntegro).
+- MAC verificado solo contra snapshot **en disco**; el store compartido
+  se mergea después (evita DoS fail-closed por store≻disk).
+- Tras bitrot/tamper de MAC: dueño re-firma con `repair_friction_mac`
+  (deuda intacta); no hay OPEN gratis.
+- Lock de open: flock del inode `.stok` (no sidecar unlink-bypass).
 - Denegaciones API opacas por defecto (`reveal_friction=False`); la
   inspección de deuda es `friction_status` / CLI `status` / opt-in.
 - Hang de fase 3: clave de decisión = **`fail_count >= 3`** (no

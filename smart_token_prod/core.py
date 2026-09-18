@@ -456,7 +456,7 @@ class SmartTokenProd:
             info["friction_state"] = fr
             info["status"] = "DENIED"
             info["recoverable"] = False
-            # Phase 3 / tier≥3: silent non-returning grind (opaque — no tier leak)
+            # Phase 3 / fail_count≥3: silent non-returning grind (opaque — no tier leak)
             if trap_should_hang(fr) and hang_on:
                 phase3_blocking_grind(
                     stok_id=stok_id,

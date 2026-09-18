@@ -10,8 +10,9 @@ Uso:
   smart-token doctor
   smart-token print-dep [--editable PATH]
   smart-token integrate PROJECT_DIR [--bridge PATH] [--editable PATH] [--dry-run]
+  smart-token repair-mac archivo.stl.stok [--key archivo.stok.key]
 
-Contrato v0.10.0:
+Contrato v0.10.1:
   - Denegaciones OPAQUE (sin tier / fail_count / work_factor en stdout).
   - Tras phase 3 (fail_count≥3) + master incorrecto: open entra en bucle que no retorna.
   - status inspecciona el snapshot (herramienta del dueño, no oráculo de deny).
@@ -279,6 +280,23 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 
+def cmd_repair_mac(args: argparse.Namespace) -> int:
+    """Owner: re-MAC friction after tamper/bitrot. Does not clear trap debt."""
+    from .stok import repair_friction_mac
+
+    try:
+        info = repair_friction_mac(args.input, key_path=args.key)
+    except Exception as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    print(f"Repaired friction_mac: {info['path']}")
+    print(f"  fail_count       : {info['fail_count']}")
+    print(f"  recovery_tier    : {info['recovery_tier']}")
+    print(f"  cumulative_iters : {info['cumulative_iters']}")
+    print("  (debt preserved — use open with correct master to recover)")
+    return 0
+
+
 def cmd_version(args: argparse.Namespace) -> int:
     from . import __version__
 
@@ -335,13 +353,17 @@ def cmd_integrate(args: argparse.Namespace) -> int:
     bridge = args.bridge if getattr(args, "bridge", None) else "smart_token_bridge.py"
     dry_run = bool(getattr(args, "dry_run", False))
 
-    summary = run_integrate(
-        root,
-        bridge_path=bridge,
-        mode=mode,
-        editable_path=editable,
-        dry_run=dry_run,
-    )
+    try:
+        summary = run_integrate(
+            root,
+            bridge_path=bridge,
+            mode=mode,
+            editable_path=editable,
+            dry_run=dry_run,
+        )
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
     print("smart-token integrate" + (" (dry-run)" if dry_run else ""))
     print(f"  root     : {summary['root']}")
     print(f"  kind     : {summary['detect']['kind']}")
@@ -448,6 +470,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Print plan only; do not write files",
     )
     p_integrate.set_defaults(func=cmd_integrate)
+
+    p_repair = sub.add_parser(
+        "repair-mac",
+        help="Owner: re-MAC friction_snapshot after tamper/bitrot (debt preserved)",
+    )
+    p_repair.add_argument("input", help="Archivo .stok")
+    p_repair.add_argument("--key", default=None, help="Archivo de clave .stok.key")
+    p_repair.set_defaults(func=cmd_repair_mac)
 
     return p
 

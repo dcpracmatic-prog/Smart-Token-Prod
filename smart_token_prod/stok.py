@@ -85,10 +85,16 @@ KEY_VERSION = 1
 
 @contextmanager
 def exclusive_stok(path: str | Path) -> Iterator[None]:
-    """Réplicas: un solo open_stok escribe fail_count a la vez sobre el mismo .stok."""
-    lock_path = Path(str(path) + ".lock")
-    lock_path.touch(exist_ok=True)
-    fh = open(lock_path, "a+b")
+    """Serialize open_stok writers on the .stok inode itself.
+
+    Sidecar `.stok.lock` files are NOT used: an attacker who unlinks the
+    sidecar can create a fresh lock inode and bypass the critical section.
+    Advisory flock on the data file inode cannot be bypassed that way.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FileNotFoundError(f"No existe el .stok: {path}")
+    fh = open(path, "rb+")
     try:
         if fcntl is not None:
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
@@ -433,20 +439,19 @@ def _open_stok_body(
             info["mlkem_ok"] = False
             info["mlkem_error"] = str(e)
 
-    # Verify friction MAC when ss is available. Tampered / missing MAC is fail-closed.
+    # Verify friction MAC against the ON-DISK snapshot only (what the MAC covers).
+    # NEVER MAC-check a store-merged view — that was a 0.10 fail-closed DoS when
+    # Redis/broker/dir store was harsher than a stale replica's disk bytes.
     # NEVER clear debt to {} on MAC failure — that was the A1 free-OPEN bug.
-    persisted = dict(stok.friction_snapshot or {})
+    disk_snap = dict(stok.friction_snapshot or {})
     from .persistence import store_from_env, merge_friction
     _store = store_from_env()
     _store_id = compute_stok_id(stok.pk, stok.ct, stok.public_label)
-    if _store is not None:
-        persisted = merge_friction(persisted, _store.load(_store_id)) or persisted
-        stok.friction_snapshot = dict(persisted)
 
     mac_ok = True
     if ss is not None:
         if stok.friction_mac:
-            expected_mac = friction_mac(ss, persisted, stok.pk, stok.ct)
+            expected_mac = friction_mac(ss, disk_snap, stok.pk, stok.ct)
             if not hmac.compare_digest(expected_mac, stok.friction_mac):
                 info["friction_mac_ok"] = False
                 mac_ok = False
@@ -460,6 +465,14 @@ def _open_stok_body(
             info["integrity_error"] = "friction_mac_missing"
         else:
             info["friction_mac_ok"] = None  # legacy pre-MAC artifact
+
+    # Merge shared store only AFTER disk MAC authenticity (or legacy / no-ss).
+    persisted = disk_snap
+    if _store is not None and mac_ok:
+        persisted = merge_friction(disk_snap, _store.load(_store_id)) or disk_snap
+        stok.friction_snapshot = dict(persisted)
+    else:
+        stok.friction_snapshot = dict(disk_snap)
 
     base_key = ss if ss is not None else b"\x00" * 32
     # Rehydrate tarpit from persisted state only when MAC is trusted (or no ss yet).
@@ -629,6 +642,49 @@ def _open_stok_body(
 
     return plaintext, info
 
+
+
+
+def repair_friction_mac(
+    path: str | Path,
+    *,
+    sk: Optional[bytes] = None,
+    key_path: Optional[str | Path] = None,
+) -> Dict[str, Any]:
+    """
+    Owner recovery after friction_mac bitrot / tamper DoS.
+
+    Re-MACs the current on-disk friction_snapshot with ss derived from sk.
+    Does NOT clear fail_count / ladder / hang debt and does NOT decrypt.
+    Requires sk (parameter, key_path, sibling .key, or legacy embedded sk).
+    """
+    path = Path(path)
+    with exclusive_stok(path):
+        stok = read_stok(path)
+        resolved_sk = sk
+        if resolved_sk is None and key_path is not None:
+            resolved_sk = read_key_file(key_path)
+        if resolved_sk is None:
+            default_key = Path(str(path) + ".key")
+            if default_key.is_file():
+                resolved_sk = read_key_file(default_key)
+        if resolved_sk is None and stok.sk is not None:
+            resolved_sk = stok.sk
+        if resolved_sk is None:
+            raise ValueError("sk no disponible para repair-mac (suministre --key / .stok.key)")
+        ss = mlkem_decaps(resolved_sk, stok.ct)
+        snap = dict(stok.friction_snapshot or {})
+        new_mac = friction_mac(ss, snap, stok.pk, stok.ct)
+        stok.friction_mac = new_mac
+        write_stok(stok, path)
+        return {
+            "path": str(path),
+            "status": "REPAIRED",
+            "fail_count": int(snap.get("fail_count", 0) or 0),
+            "cumulative_iters": int(snap.get("cumulative_iters", 0) or 0),
+            "recovery_tier": int(snap.get("recovery_tier", 0) or 0),
+            "friction_mac_repaired": True,
+        }
 
 
 def friction_status(path: str | Path) -> Dict[str, Any]:

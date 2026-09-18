@@ -19,7 +19,7 @@ def test_version_exits_zero(capsys):
     rc = main(["version"])
     assert rc == 0
     out = capsys.readouterr().out.strip()
-    assert out == "0.10.0"
+    assert out == "0.10.1"
 
 
 def test_doctor_exits_zero(capsys):
@@ -35,7 +35,7 @@ def test_print_dep_git(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "smart-token-prod @" in out
-    assert "Smart-Token-Prod.git@v0.10.0" in out
+    assert "Smart-Token-Prod.git@v0.10.1" in out
 
 
 def test_print_dep_editable(capsys, tmp_path):
@@ -136,3 +136,12 @@ def test_integrate_rejects_bridge_escape(tmp_path):
     # CLI path
     with pytest.raises(ValueError):
         write_bridge_module(tmp_path, relative_path="../../outside.py", dry_run=True)
+
+
+def test_integrate_cli_rejects_bridge_escape(tmp_path, capsys):
+    """CLI integrate must exit 2 on bridge escape (no traceback)."""
+    (tmp_path / "requirements.txt").write_text("x\n", encoding="utf-8")
+    rc = main(["integrate", str(tmp_path), "--bridge", "../evil.py"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "error:" in err.lower() or "escape" in err.lower() or "absolute" in err.lower()

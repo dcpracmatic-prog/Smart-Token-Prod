@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_GIT_DEP = (
     "smart-token-prod @ "
-    "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
+    "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.1"
 )
 
 BRIDGE_TEMPLATE = '''\
@@ -30,6 +30,7 @@ from smart_token_prod.sdk import (  # noqa: F401
     is_available,
     open_artifact,
     protect_artifact,
+    repair_artifact_mac,
     status,
 )
 
@@ -39,6 +40,7 @@ __all__ = [
     "protect_artifact",
     "open_artifact",
     "artifact_friction_status",
+    "repair_artifact_mac",
 ]
 '''
 
@@ -52,7 +54,7 @@ Este archivo lo escribió `smart-token integrate`. Pasos recomendados:
 Instala el paquete desde git (o editable local):
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.1"
 # o editable:
 # pip install -e /ruta/a/Smart-Token-Prod
 ```
