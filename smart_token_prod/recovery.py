@@ -14,9 +14,11 @@ Logical trap + Argon2 hardening (v0.7.0):
   11k / 22k / 33k (max recovery_tier = 3). Phases mirror fail_count:
     fail 1 → phase 1 (flag_fibonacci)
     fail 2 → phase 2 (flag_persistencia)
-    fail 3+ → phase 3 (tarpit_triggered); when recovery_tier >= 3,
+    fail 3+ → phase 3 (tarpit_triggered); when fail_count >= 3,
               open enters a NON-RETURNING Argon2+grind loop (attacker
               must kill the process). Castigated .stok already persisted.
+              (Hang key is fail_count, not recovery_tier — tier may still be 2
+              at the first hang after the 3rd fail.)
 
   Correct master at any tier (incl. ≥3): pay once → OPEN + reset friction.
   File is NEVER destroyed.

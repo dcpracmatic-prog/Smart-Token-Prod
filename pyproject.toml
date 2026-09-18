@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "smart-token-prod"
-version = "0.9.0"
+version = "0.10.0"
 description = "Token post-cuantico (ML-KEM + AES-256-GCM) con trampa logica persistente (fases 1-3) endurecida por Argon2id, nucleo C++ opcional y capa .stok; sk fuera de banda"
 readme = "README.md"
 requires-python = ">=3.9"

@@ -126,11 +126,14 @@ def open_artifact(
     output_path: PathLike | None = None,
     force_failure: bool = False,
     update_friction: bool = True,
+    reveal_friction: bool = False,
     **kwargs: Any,
 ) -> Tuple[Optional[bytes], Dict[str, Any]]:
     """
-    Attempt to open a .stok artifact.
+    Attempt to open a .stok artifact (product surface).
 
+    DENIED info is opaque by default (no fail_count / tier / friction_state).
+    Pass reveal_friction=True for owner inspection of ladder/debt.
     Returns (plaintext_or_None, info) same as open_stok.
     """
     _require_stack()
@@ -144,6 +147,7 @@ def open_artifact(
         force_failure=force_failure,
         output_path=output_path,
         update_friction=update_friction,
+        reveal_friction=reveal_friction,
         **kwargs,
     )
 

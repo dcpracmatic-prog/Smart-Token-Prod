@@ -11,9 +11,9 @@ Uso:
   smart-token print-dep [--editable PATH]
   smart-token integrate PROJECT_DIR [--bridge PATH] [--editable PATH] [--dry-run]
 
-Contrato v0.9.0:
+Contrato v0.10.0:
   - Denegaciones OPAQUE (sin tier / fail_count / work_factor en stdout).
-  - Tras phase 3 (tier≥3) + master incorrecto: open entra en bucle que no retorna.
+  - Tras phase 3 (fail_count≥3) + master incorrecto: open entra en bucle que no retorna.
   - status inspecciona el snapshot (herramienta del dueño, no oráculo de deny).
 """
 
@@ -26,19 +26,33 @@ import time
 from pathlib import Path
 
 
-def _master_from_args(args) -> bytes:
+def _master_from_args(args, *, allow_demo_default: bool = False):
     if getattr(args, "master", None):
         return args.master.encode("utf-8")
     env = os.environ.get("SMART_TOKEN_MASTER")
     if env:
         return env.encode("utf-8")
-    return b"demo-master-secret"
+    if allow_demo_default:
+        print(
+            "WARNING: using built-in demo-master-secret — "
+            "NEVER use this for real data. Set --master or SMART_TOKEN_MASTER.",
+            file=sys.stderr,
+        )
+        return b"demo-master-secret"
+    print(
+        "error: --master or SMART_TOKEN_MASTER is required "
+        "(demo-master-secret is only for `smart-token demo`)",
+        file=sys.stderr,
+    )
+    return None
 
 
 def cmd_protect(args: argparse.Namespace) -> int:
     from .stok import protect_file
 
     master = _master_from_args(args)
+    if master is None:
+        return 2
     stok_path, key_path = protect_file(
         args.input,
         output_path=args.out,
@@ -59,6 +73,8 @@ def cmd_open(args: argparse.Namespace) -> int:
     from .stok import open_stok
 
     master = _master_from_args(args)
+    if master is None:
+        return 2
     force = bool(args.force_failure)
 
     print(f"Abriendo: {args.input}")
@@ -153,7 +169,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
         print(f"Creando archivo de muestra: {sample}")
         _make_sample_stl(sample)
 
-    master = _master_from_args(args)
+    master = _master_from_args(args, allow_demo_default=True)
     stok_path = sample.with_suffix(sample.suffix + ".stok")
     key_path = Path(str(stok_path) + ".key")
     recovered = sample.with_name(sample.stem + "_recovered" + sample.suffix)
@@ -197,7 +213,7 @@ def cmd_demo(args: argparse.Namespace) -> int:
     print("=" * 60)
     print("   Cada intento paga Argon2id + trabajo de trampa.")
     print("   CLI no anuncia tier/fail_count. Use `status` para inspeccionar.")
-    print("   Tras phase 3 (tier≥3), el siguiente wrong open NO RETORNA.")
+    print("   Tras phase 3 (fail_count≥3), el siguiente wrong open NO RETORNA.")
     print("   Demo hace 3 fallos (aún < hang) y muestra status.")
     print()
 
@@ -349,7 +365,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     common = argparse.ArgumentParser(add_help=False)
-    common.add_argument("--master", default=None, help="Secreto maestro (o SMART_TOKEN_MASTER)")
+    common.add_argument("--master", default=None, help="Secreto maestro requerido para protect/open (o SMART_TOKEN_MASTER); demo puede omitirlo con aviso")
     common.add_argument(
         "--backend",
         choices=["auto", "native", "python"],

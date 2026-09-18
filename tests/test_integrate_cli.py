@@ -19,7 +19,7 @@ def test_version_exits_zero(capsys):
     rc = main(["version"])
     assert rc == 0
     out = capsys.readouterr().out.strip()
-    assert out == "0.9.0"
+    assert out == "0.10.0"
 
 
 def test_doctor_exits_zero(capsys):
@@ -35,7 +35,7 @@ def test_print_dep_git(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "smart-token-prod @" in out
-    assert "Smart-Token-Prod.git@v0.9.0" in out
+    assert "Smart-Token-Prod.git@v0.10.0" in out
 
 
 def test_print_dep_editable(capsys, tmp_path):
@@ -121,3 +121,18 @@ def test_detect_project_unknown(tmp_path):
     info = detect_project(tmp_path)
     assert info["kind"] == "unknown"
     assert info["vendor_stp_path"] is None
+
+
+def test_integrate_rejects_bridge_escape(tmp_path):
+    """D2: --bridge must resolve under project root (no .. / abs outside)."""
+    from smart_token_prod.integrate import resolve_bridge_path, write_bridge_module
+    import pytest
+
+    (tmp_path / "requirements.txt").write_text("x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="escapes|absolute"):
+        resolve_bridge_path(tmp_path, "../evil_bridge.py")
+    with pytest.raises(ValueError, match="absolute|escapes"):
+        resolve_bridge_path(tmp_path, "/tmp/evil_bridge.py")
+    # CLI path
+    with pytest.raises(ValueError):
+        write_bridge_module(tmp_path, relative_path="../../outside.py", dry_run=True)

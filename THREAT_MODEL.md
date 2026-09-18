@@ -1,9 +1,33 @@
-# Modelo de amenazas — Smart Token Prod (v0.8.2)
+# Modelo de amenazas — Smart Token Prod (v0.10.0)
 
 Estado: **borrador técnico interno**. Esto NO sustituye una auditoría de
 seguridad independiente — es el punto de partida que un auditor necesitaría
 para empezar a trabajar, y el mínimo que cualquier cliente serio va a pedir
 antes de confiar en el sistema.
+
+
+## 0. Contrato de integridad de fricción (v0.10.0)
+
+- La trampa lógica (fases / ladder / hang) en el path oficial
+  (`open_stok` / SDK) solo opera sobre un `friction_snapshot` con
+  **`friction_mac` válido** (HMAC keyed por el shared secret ML-KEM).
+- MAC inválido o ausente (binding v2) → **fail-closed**: DENIED, OPEN
+  prohibido, **no** se sustituye el snapshot por `{}`, bytes previos en
+  disco intactos. Esto cierra el bypass de auditoría A1 (bit-flip MAC →
+  open gratis).
+- Open sin `sk`/`ss`: DENY de solo lectura (sin mutar friction; no hay
+  re-MAC íntegro).
+- Denegaciones API opacas por defecto (`reveal_friction=False`); la
+  inspección de deuda es `friction_status` / CLI `status` / opt-in.
+- Hang de fase 3: clave de decisión = **`fail_count >= 3`** (no
+  `recovery_tier >= 3`).
+- **B1 residual:** con `sk`+master+fuente, un atacante puede
+  reimplementar decaps+KDF+AES offline y omitir la máquina de estados;
+  la dureza cae a Argon2. El producto **no** afirma lo contrario. La
+  garantía file-borne es contra manipulación del `.stok` **sin** `sk`
+  en la ruta autenticada.
+
+Detalle de remediación: `docs/AUDIT_REMEDIATION.md`.
 
 ## 1. Qué protege el sistema
 
@@ -52,6 +76,10 @@ antes de confiar en el sistema.
 - **Post-cuántico "en tránsito" solamente**: ML-KEM protege el intercambio
   de clave; no hay firma post-cuántica (ML-DSA/SLH-DSA) para autenticar el
   origen del mensaje — si eso es parte del caso de uso, falta.
+- **Bypass offline de la máquina de estados con `sk`+fuente (B1)**:
+  quien reimplementa las primitivas puede omitir tarpit/ladder/hang
+  oficiales; no obtiene plaintext sin master (binding v2). Mitigado
+  en producto vía claims atados a `open_stok` + MAC fail-closed.
 - **Ingeniería social / phishing sobre el `master_secret`**: la coherencia
   depende de un secreto compartido; su distribución y custodia están fuera
   del alcance del código actual.

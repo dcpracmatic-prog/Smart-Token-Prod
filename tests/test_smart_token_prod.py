@@ -1,5 +1,5 @@
 """
-Suite de pruebas — Smart Token Prod v0.7.0
+Suite de pruebas — Smart Token Prod v0.10.0
 
 Producto:
   - Differentiator = trampa lógica secuencial (fases 1→2→3) persistida en .stok
@@ -255,7 +255,7 @@ def test_stok_phases_escalate_silently_in_snapshot(tmp_path):
         sample, master_secret=master, tarpit_mode="off", tarpit_seconds=0.0, friction_backend="python"
     )
 
-    _, info = open_stok(stok_path, master_secret=b"wrong", key_path=key_path)
+    _, info = open_stok(stok_path, master_secret=b"wrong", key_path=key_path, reveal_friction=True)
     assert info["status"] == "DENIED"
     assert info["work_factor_paid"] == 1
     assert info["hash_iters_paid"] == 10_000
@@ -263,13 +263,13 @@ def test_stok_phases_escalate_silently_in_snapshot(tmp_path):
     assert info["friction_state"]["recovery_tier"] == 0
     assert info["friction_state"]["flag_fibonacci"] is True
 
-    _, info = open_stok(stok_path, master_secret=b"wrong2", key_path=key_path)
+    _, info = open_stok(stok_path, master_secret=b"wrong2", key_path=key_path, reveal_friction=True)
     assert info["status"] == "DENIED"
     assert info["friction_state"]["cumulative_iters"] == 20_000
     assert info["friction_state"]["recovery_tier"] == 1
     assert info["friction_state"]["flag_persistencia"] is True
 
-    _, info = open_stok(stok_path, master_secret=b"wrong3", key_path=key_path)
+    _, info = open_stok(stok_path, master_secret=b"wrong3", key_path=key_path, reveal_friction=True)
     assert info["status"] == "DENIED"
     assert info["friction_state"]["cumulative_iters"] == 30_000
     assert info["friction_state"]["recovery_tier"] == 2
@@ -382,7 +382,14 @@ def test_stok_without_key_fails(tmp_path):
     pt, info = open_stok(stok_path, master_secret=b"m", update_friction=True)
     assert pt is None
     assert info["status"] == "DENIED"
-    assert "sk no disponible" in (info.get("mlkem_error") or "")
+    # Opaque by default — no mlkem_error / friction_state oracle
+    assert "mlkem_error" not in info
+    assert "friction_state" not in info
+    pt2, info2 = open_stok(
+        stok_path, master_secret=b"m", update_friction=True, reveal_friction=True
+    )
+    assert pt2 is None and info2["status"] == "DENIED"
+    assert "sk no disponible" in (info2.get("mlkem_error") or "")
 
 
 def test_stok_no_wall_tarpit_before_phase3_hang(tmp_path):
@@ -661,3 +668,146 @@ def test_validation_ladder_1_2_3_fails(tmp_path):
         "--backend", "python", "--tarpit-mode", "off",
     ])
     assert rc == 1
+
+
+# ---------------------------------------------------------------------------
+# v0.10.0 — A1 fail-closed friction MAC + A2 opaque API deny + D1 CLI master
+# ---------------------------------------------------------------------------
+
+
+def _bitflip_friction_mac(stok_path):
+    """Flip one bit in friction_mac inside the on-disk .stok JSON body."""
+    from smart_token_prod.stok import read_stok, write_stok
+    import base64
+
+    stok = read_stok(stok_path)
+    assert stok.friction_mac and len(stok.friction_mac) >= 1
+    b = bytearray(stok.friction_mac)
+    b[0] ^= 0x01
+    stok.friction_mac = bytes(b)
+    write_stok(stok, stok_path)
+    return stok
+
+
+def test_a1_mac_tamper_does_not_grant_free_open(tmp_path):
+    """After N wrong opens, bit-flip friction_mac → correct master must NOT free OPEN."""
+    from smart_token_prod.stok import protect_file, open_stok, friction_status, read_stok
+
+    sample = tmp_path / "a1.stl"
+    sample.write_bytes(b"a1-payload-secret")
+    master = b"a1-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    for i in range(3):
+        pt, info = open_stok(
+            stok_path, master_secret=b"bad-" + str(i).encode(), key_path=key_path,
+            reveal_friction=True,
+        )
+        assert pt is None and info["status"] == "DENIED"
+
+    before = friction_status(stok_path)["friction_snapshot"]
+    assert int(before["fail_count"]) == 3
+    debt_fc = int(before["fail_count"])
+    debt_cum = int(before["cumulative_iters"])
+
+    _bitflip_friction_mac(stok_path)
+    # Correct master must NOT wipe trap / free OPEN
+    for _ in range(5):
+        pt, info = open_stok(
+            stok_path, master_secret=master, key_path=key_path, reveal_friction=True
+        )
+        assert pt is None
+        assert info["status"] == "DENIED"
+        assert info.get("friction_mac_ok") is False
+
+    after = read_stok(stok_path)
+    # Disk bytes for friction debt must remain (not cleared to {})
+    assert int(after.friction_snapshot.get("fail_count", 0)) == debt_fc
+    assert int(after.friction_snapshot.get("cumulative_iters", 0)) == debt_cum
+    assert after.friction_snapshot != {}
+
+
+def test_a1_open_without_key_does_not_erase_trap(tmp_path):
+    """open without sk must not mutate friction / strip punishment for later keyed open."""
+    from smart_token_prod.stok import protect_file, open_stok, friction_status, read_stok
+
+    sample = tmp_path / "nokey.stl"
+    sample.write_bytes(b"trap-payload")
+    master = b"nokey-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    for i in range(2):
+        open_stok(stok_path, master_secret=b"w" + str(i).encode(), key_path=key_path)
+    snap_before = dict(read_stok(stok_path).friction_snapshot)
+    mac_before = read_stok(stok_path).friction_mac
+    assert int(snap_before["fail_count"]) == 2
+
+    # Move key away and open without sk
+    relocated = tmp_path / "hidden.key"
+    relocated.write_bytes(key_path.read_bytes())
+    key_path.unlink()
+    pt, info = open_stok(stok_path, master_secret=master, update_friction=True)
+    assert pt is None and info["status"] == "DENIED"
+
+    stok_mid = read_stok(stok_path)
+    assert stok_mid.friction_snapshot == snap_before
+    assert stok_mid.friction_mac == mac_before
+
+    # Restore key — ladder still requires 3 correct validations (2 fails → need 3)
+    key_path.write_bytes(relocated.read_bytes())
+    assert friction_status(stok_path)["friction_snapshot"]["fail_count"] == 2
+    statuses = []
+    for _ in range(3):
+        pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+        statuses.append(info["status"])
+    assert statuses == ["DENIED", "DENIED", "OPEN"]
+    assert pt == b"trap-payload"
+
+
+def test_api_denied_is_opaque_by_default(tmp_path):
+    """API DENIED must not leak fail_count / tier / work_factor / friction_state."""
+    from smart_token_prod.stok import protect_file, open_stok
+    from smart_token_prod.sdk import open_artifact
+
+    sample = tmp_path / "opaque.stl"
+    sample.write_bytes(b"opaque-payload")
+    master = b"opaque-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", friction_backend="python"
+    )
+    pt, info = open_stok(stok_path, master_secret=b"wrong", key_path=key_path)
+    assert pt is None and info["status"] == "DENIED"
+    for k in (
+        "fail_count", "recovery_tier", "work_factor", "cumulative_iters",
+        "friction_state", "friction_before", "friction",
+    ):
+        assert k not in info, f"opaque leak: {k}"
+
+    pt2, info2 = open_artifact(stok_path, master_secret=b"wrong", key_path=key_path)
+    assert pt2 is None and info2["status"] == "DENIED"
+    assert "friction_state" not in info2
+    assert "recovery_tier" not in info2
+
+    # Owner opt-in
+    _, rich = open_stok(
+        stok_path, master_secret=b"wrong2", key_path=key_path, reveal_friction=True
+    )
+    assert rich["status"] == "DENIED"
+    assert "friction_state" in rich
+    assert rich["friction_state"]["fail_count"] >= 1
+
+
+def test_cli_protect_open_require_master(tmp_path, capsys):
+    """D1: protect/open require --master or SMART_TOKEN_MASTER (no silent demo default)."""
+    import os
+    from smart_token_prod.cli import main
+
+    sample = tmp_path / "need.stl"
+    sample.write_bytes(b"x")
+    os.environ.pop("SMART_TOKEN_MASTER", None)
+    rc = main(["protect", str(sample), "--backend", "python", "--tarpit-mode", "off"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "SMART_TOKEN_MASTER" in err or "--master" in err

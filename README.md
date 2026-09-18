@@ -1,11 +1,11 @@
-# Smart Token Prod v0.9.0
+# Smart Token Prod v0.10.0
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.9.0** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.10.0** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -15,25 +15,27 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 3. **Binding v2** — `sk` sola no descifra; `.stok` v2 sin oráculo salt/material
 4. **Trampa lógica 1→2→3** — `fail_count` / flags / `recovery_tier` en `friction_snapshot`
 5. **Argon2id + trabajo de trampa** — en **cada** intento (correcto o incorrecto)
-6. **Denegaciones opacas** — CLI/API de deny **no** anuncian tier, fail_count ni work_factor
-7. **Phase 3 hang** — wrong master con `recovery_tier ≥ 3` → bucle bloqueante que **no retorna**
+6. **Denegaciones opacas** — CLI `open` y API (`open_stok`/`open_artifact`) por
+   defecto **no** anuncian tier, fail_count ni work_factor; dueño: `reveal_friction=True` o `status`
+7. **Phase 3 hang** — wrong master con `fail_count ≥ 3` → bucle bloqueante que **no retorna**
 8. **Validation ladder (v0.8.1)** — tras N fallos, OPEN pide N+1 masters correctos seguidos (tope 4)
 9. **FrictionStore compartido (v0.8.2)** — `FileFrictionStore` + flock / lock de `.stok`; réplicas en el mismo disco suman el mismo `fail_count`
 10. **Núcleo C++** — `libfriction.so` + FFI opcional (`auto`/`native`/`python`)
 11. **`sk` fuera de banda** — `.stok.key`
 12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate`
 
-## Contrato de producto (v0.9.0)
+## Contrato de producto (v0.10.0)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
   → master correcto  → cuenta hacia OPEN (ladder: tras N fallos hacen falta
                        N+1 correctos seguidos, tope 4) + plaintext + reset friction
-                       (incluso si tier≥3), cuando la ladder se completa
+                       (incluso tras fail_count≥3), cuando la ladder se completa
   → master incorrecto → DENIED opaco + escalate fase en .stok / store
        parciales correctos en ladder incompleta → DENIED opaco (sin reset)
-       si recovery_tier ≥ 3 → entra grind Argon2+iters (+fib flavor) y NO RETORNA
-       (atacante debe matar el proceso; .stok castigado ya persistió)
+       si fail_count ≥ 3 (fase 3) → entra grind Argon2+iters (+fib flavor) y NO RETORNA
+       (atacante debe matar el proceso; .stok castigado ya persistió; la clave
+        del hang es fail_count, no recovery_tier)
 
 Fases (snapshot; no se imprimen en deny):
   fail 1 → fase 1 (flag_fibonacci)
@@ -49,9 +51,19 @@ Réplicas (mismo host / disco compartido):
 - Fibonacci dentro del grind de fase 3 es **sabor narrativo / non-oracle**,
   **no** dureza criptográfica por sí sola.
 - El archivo **nunca se destruye** por fallos.
-- `status` inspecciona el snapshot (herramienta del dueño); **open** deny es opaco.
-- Quien posee `sk` puede re-MAC un snapshot reseteado y saltarse el tarpit
-  oficial; **no** obtiene plaintext sin master (límite documentado desde v0.8.0).
+- `status` inspecciona el snapshot (herramienta del dueño); **open**/API deny es opaco
+  salvo `reveal_friction=True`.
+- **Integridad de fricción (v0.10):** `friction_mac` inválida → fail-closed (OPEN
+  prohibido; no se acepta snapshot vacío; deuda en disco no se borra). Open sin
+  `sk` no muta fricción (no se puede re-MAC).
+- **Garantía de producto** para trampa/ladder/hang: ruta autenticada
+  `protect_file` / `open_stok` / `sdk.*` con fricción integrity-checked.
+  Reimplementación offline con `sk`+master+fuente reduce a Argon2 (commodity);
+  no se puede impedir crypto primitiva offline, pero la trampa **file-borne**
+  sí resiste manipulación del `.stok` sin `sk` (A1).
+- Quien posee `sk` puede re-MAC un snapshot reseteado offline y saltarse el
+  tarpit oficial; **no** obtiene plaintext sin master (límite B1 honesto).
+- `protect`/`open` CLI exigen `--master` o `SMART_TOKEN_MASTER` (sin default demo).
 
 
 ## Usar como componente en otro proyecto
@@ -60,7 +72,7 @@ En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
 instala el paquete y usa el scaffolding:
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.9.0"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
 smart-token integrate /ruta/al/proyecto
 ```
 
@@ -74,8 +86,9 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 
 smart-token protect modelo.stl --master "mi-secreto"
 # → modelo.stl.stok  +  modelo.stl.stok.key
+# (protect/open EXIGEN --master o SMART_TOKEN_MASTER)
 
-# Deny opaco (sin imprimir tier). Tras phase 3 + wrong: el proceso puede colgarse.
+# Deny opaco (sin imprimir tier). Tras fail_count≥3 + wrong: el proceso puede colgarse.
 smart-token open modelo.stl.stok --master "malo" --key modelo.stl.stok.key
 
 # Correcto incluso tras castigo → OPEN + reset (respetando ladder si aplica)
@@ -96,16 +109,16 @@ override `_phase3_hang=False` en `open` / `open_stok`.
 ## Demo: hang silencioso vs open correcto
 
 ```bash
-# 1) Proteger y fallar hasta tier 3 (hang OFF solo en tests; en prod hang ON)
+# 1) Proteger y fallar hasta fail_count≥3 (hang OFF solo en tests; en prod hang ON)
 smart-token demo   # la demo desactiva hang internamente
 
-# 2) Castigar a tier≥3, luego wrong open con hang (proceso no retorna ~segundos)
+# 2) Castigar a fail_count≥3, luego wrong open con hang (proceso no retorna ~segundos)
 #    Ver test_wrong_open_at_tier3_hangs_in_subprocess — subprocess + timeout.
 
-# 3) Mismo .stok castigado + master correcto → OPEN + reset friction
+# 3) Mismo .stok castigado + master correcto → ladder + OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.9.0)
+## Límites de esta versión (v0.10.0)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
@@ -115,7 +128,7 @@ smart-token demo   # la demo desactiva hang internamente
 | `sk` en `.stok.key` | HSM/KMS cableado al flujo; Android / Termux |
 | Un master correcto siempre puede abrir (pagando el costo; ladder si hubo fallos) | “Destruir archivo tras N fallos” (**no**) |
 | Hang de fase 3 es best-effort en-proceso (kill = salida) | Hang a prueba de ptrace / OS scheduler abuse |
-| Binding v2: sin master no hay plaintext | Poseedor de `sk` que re-MAC/resetee friction (salta tarpit, no obtiene payload) |
+| Binding v2 + MAC fail-closed en open autenticado | Offline con `sk`+fuente: re-MAC/reset friction (salta tarpit oficial; sin master no hay plaintext) |
 
 **Resumen:** el valor de producto es la **máquina de estados de trampa**
 persistente + PQ crypto; Argon2 es el endurecimiento commodity de cada intento.
@@ -124,7 +137,7 @@ Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
 
 ## Estado del artefacto (honestidad operativa)
 
-- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.9.0`); CLI `smart-token`.
+- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.0`); CLI `smart-token`.
 - SDK (`smart_token_prod.sdk`) + `smart-token integrate` para consumidores externos.
 - Suite `tests/` y scripts bajo `scripts/` (replicas, flujo completo, costo de ataque).
 - `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como

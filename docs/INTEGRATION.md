@@ -17,7 +17,7 @@ editable) y usar la API pública / CLI `smart-token integrate`.
 ### Desde git (recomendado en CI / otros repos)
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.9.0"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
 ```
 
 O imprime la línea con:
@@ -108,8 +108,7 @@ from smart_token_prod import (
 from smart_token_prod.native import is_available as native_available
 ```
 
-Los comandos `protect` / `open` / `status` / `demo` de la CLI siguen
-igual; el contrato de denegación opaca y hang de fase 3 no cambia.
+CLI: `protect`/`open` exigen `--master` o `SMART_TOKEN_MASTER`. API DENIED opaca por defecto (`reveal_friction`). Hang de fase 3: `fail_count >= 3`.
 
 ## Checklist de migración (fuera de vendor/)
 
@@ -121,7 +120,7 @@ igual; el contrato de denegación opaca y hang de fase 3 no cambia.
 5. Quitar `PYTHONPATH=vendor:.` (o fragmentos equivalentes) **solo**
    usados para STP.
 6. `smart-token doctor` y una smoke de protect/open en un archivo de prueba.
-7. Actualizar CI para `pip install` la dep (tag `@v0.9.0` o editable en
+7. Actualizar CI para `pip install` la dep (tag `@v0.10.0` o editable en
    monorepo local).
 
 ## Límites (honestidad)

@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.10.0 — Fail-closed friction MAC + opaque API deny
+
+### P0 — A1 MAC fail-closed (logical design preserved)
+- **Bug:** invalid `friction_mac` cleared `friction_snapshot` to `{}`, so the
+  next correct master could OPEN and wipe the persistent trap (audit A1).
+- **Fix:** MAC present+invalid → integrity failure: OPEN forbidden on the
+  authenticated path; prior debt bytes left untouched; ladder/fail_count not
+  reset. Missing MAC on binding v2 also fail-closed.
+- **open without sk/ss:** read-only DENY — does **not** mutate friction on
+  disk (cannot re-MAC). Trap remains for subsequent keyed open.
+- When MAC is valid: escalate / ladder / hang-after-persist unchanged
+  (phases 1→2→3, binding v2, AES-GCM, ML-KEM).
+
+### P0 — A2 Opaque deny in API by default
+- `open_stok` / `sdk.open_artifact`: DENIED `info` omits `fail_count`,
+  `recovery_tier`, `work_factor`, `cumulative_iters`, `friction_state` by
+  default.
+- Owner opt-in: `reveal_friction=True`. CLI `open` stays opaque; CLI
+  `status` remains the inspection tool.
+
+### P2 footguns
+- **D1:** CLI `protect`/`open` require `--master` or `SMART_TOKEN_MASTER`
+  (no silent `demo-master-secret`; only `demo` may default, with loud warning).
+- **D2:** `integrate --bridge` must resolve under project root (reject `..`
+  and absolutes outside).
+- **D3:** hang docs match code: **`fail_count >= 3`** (not `recovery_tier >= 3`).
+
+### B1 honesty
+- Product guarantee for trap/ladder/hang attaches to the **authenticated
+  open path** with integrity-checked friction. Offline reimplementation with
+  `sk`+master reduces to Argon2 work-factor (commodity) — documented in
+  README / THREAT_MODEL / `docs/AUDIT_REMEDIATION.md`.
+
+### Evidence
+- Adversarial tests: MAC bit-flip, open-without-key, opaque API, CLI master,
+  bridge path escape.
+- Version **0.10.0** everywhere.
+
+
 ## v0.9.0 — SDK + CLI integrate (componente instalable)
 
 - `smart_token_prod.sdk`: API de alto nivel (`is_available`, `status`,

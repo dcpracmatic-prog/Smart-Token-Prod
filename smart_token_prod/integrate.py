@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_GIT_DEP = (
     "smart-token-prod @ "
-    "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.9.0"
+    "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
 )
 
 BRIDGE_TEMPLATE = '''\
@@ -52,7 +52,7 @@ Este archivo lo escribió `smart-token integrate`. Pasos recomendados:
 Instala el paquete desde git (o editable local):
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.9.0"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.0"
 # o editable:
 # pip install -e /ruta/a/Smart-Token-Prod
 ```
@@ -104,6 +104,25 @@ python -c "from smart_token_bridge import is_available; print(is_available())"
 
 Detalle: ver `docs/INTEGRATION.md` en el repo Smart-Token-Prod.
 """
+
+
+
+def resolve_bridge_path(root: Path, relative_path: str) -> Path:
+    """Resolve --bridge under project root; reject abs paths and .. escapes."""
+    root = Path(root).resolve()
+    rel = Path(relative_path)
+    if rel.is_absolute():
+        raise ValueError(
+            f"bridge path must be relative to project root (got absolute: {relative_path})"
+        )
+    target = (root / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(
+            f"bridge path escapes project root: {relative_path!r} → {target}"
+        ) from exc
+    return target
 
 
 def detect_project(root: Path) -> Dict[str, Any]:
@@ -211,13 +230,14 @@ def write_bridge_module(
 ) -> Dict[str, Any]:
     """Write thin re-export module under the host project."""
     root = Path(root).resolve()
-    target = root / relative_path
+    target = resolve_bridge_path(root, relative_path)
+    rel_out = str(target.relative_to(root))
     if not dry_run:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(BRIDGE_TEMPLATE, encoding="utf-8")
     return {
         "path": str(target),
-        "relative_path": relative_path,
+        "relative_path": rel_out,
         "dry_run": dry_run,
     }
 

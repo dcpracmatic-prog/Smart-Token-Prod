@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import json
 import struct
 from contextlib import contextmanager
@@ -54,6 +55,27 @@ from .recovery import (
     trap_should_hang,
     MAX_TIER,
 )
+
+
+# Fields safe to return on DENIED when reveal_friction=False (product API opacity).
+_OPAQUE_DENY_KEYS = (
+    "path",
+    "status",
+    "binding_version",
+    "work_factor_paid",
+    "hash_iters_paid",
+)
+
+
+def _public_info(info: Dict[str, Any], *, reveal_friction: bool) -> Dict[str, Any]:
+    """Strip friction/ladder oracle from DENIED responses unless owner opts in."""
+    if reveal_friction or info.get("status") != "DENIED":
+        # Never leak hang kwargs to callers
+        out = dict(info)
+        out.pop("_hang", None)
+        return out
+    return {k: info[k] for k in _OPAQUE_DENY_KEYS if k in info}
+
 
 MAGIC = b"STOK"
 VERSION = 2
@@ -326,9 +348,10 @@ def open_stok(
     force_failure: bool = False,
     output_path: Optional[str | Path] = None,
     update_friction: bool = True,
+    reveal_friction: bool = False,
 ) -> Tuple[Optional[bytes], Dict[str, Any]]:
     """
-    Intenta abrir un .stok.
+    Intenta abrir un .stok (superficie de producto autenticada).
 
     La sk debe suministrarse por uno de estos caminos (en orden):
       1. parámetro `sk`
@@ -336,7 +359,15 @@ def open_stok(
       3. archivo hermano por defecto: `<path>.key`
       4. sk embebida en el .stok (solo archivos legados)
 
-    Si no hay sk disponible, el intento falla y se registra fricción.
+    Si no hay sk/ss: DENIED en modo solo-lectura (no muta friction en disco;
+    sin ss no se puede re-MAC de forma íntegra).
+
+    Si friction_mac está presente e inválida: fall-closed — OPEN prohibido,
+    no se acepta snapshot "fresco" vacío, no se resetea fail_count/ladder,
+    bytes previos en disco se dejan intactos.
+
+    Por defecto, info en DENIED es opaca (sin fail_count / tier / friction_state).
+    Dueño: reveal_friction=True o CLI `status`.
     """
     path = Path(path)
     with exclusive_stok(path):
@@ -353,9 +384,10 @@ def open_stok(
             hang_after_holder=None,
         )
     hang = info.pop("_hang", None)
+    public = _public_info(info, reveal_friction=reveal_friction)
     if hang:
         phase3_blocking_grind(**hang)
-    return plaintext, info
+    return plaintext, public
 
 
 def _open_stok_body(
@@ -401,7 +433,8 @@ def _open_stok_body(
             info["mlkem_ok"] = False
             info["mlkem_error"] = str(e)
 
-    # Verify friction MAC when ss is available. Tampered snapshot is untrusted.
+    # Verify friction MAC when ss is available. Tampered / missing MAC is fail-closed.
+    # NEVER clear debt to {} on MAC failure — that was the A1 free-OPEN bug.
     persisted = dict(stok.friction_snapshot or {})
     from .persistence import store_from_env, merge_friction
     _store = store_from_env()
@@ -409,16 +442,29 @@ def _open_stok_body(
     if _store is not None:
         persisted = merge_friction(persisted, _store.load(_store_id)) or persisted
         stok.friction_snapshot = dict(persisted)
-    if ss is not None and stok.friction_mac:
-        expected_mac = friction_mac(ss, persisted, stok.pk, stok.ct)
-        if expected_mac != stok.friction_mac:
+
+    mac_ok = True
+    if ss is not None:
+        if stok.friction_mac:
+            expected_mac = friction_mac(ss, persisted, stok.pk, stok.ct)
+            if not hmac.compare_digest(expected_mac, stok.friction_mac):
+                info["friction_mac_ok"] = False
+                mac_ok = False
+                # Keep prior snapshot bytes; do not accept a "fresh" empty debt.
+            else:
+                info["friction_mac_ok"] = True
+        elif int(stok.binding_version) >= 2:
+            # Binding v2 artifacts must carry an integrity MAC over friction.
             info["friction_mac_ok"] = False
-            persisted = {}
-            stok.friction_snapshot = {}
+            mac_ok = False
+            info["integrity_error"] = "friction_mac_missing"
         else:
-            info["friction_mac_ok"] = True
+            info["friction_mac_ok"] = None  # legacy pre-MAC artifact
 
     base_key = ss if ss is not None else b"\x00" * 32
+    # Rehydrate tarpit from persisted state only when MAC is trusted (or no ss yet).
+    # On MAC failure keep the on-disk snapshot for inspection but do not treat it
+    # as an authenticated ladder to escalate/reset.
     tarpit = _rehydrate_tarpit(stok, base_key)
 
     stok_id = persisted.get("stok_id") or compute_stok_id(
@@ -451,7 +497,7 @@ def _open_stok_body(
 
     plaintext = None
     decrypt_ok = False
-    if ss is not None and not force_failure:
+    if ss is not None and not force_failure and mac_ok:
         try:
             key = derive_aes_key(ss, master_km)
             plaintext = aes_gcm_decrypt(key, stok.nonce, stok.ciphertext, stok.aad)
@@ -460,10 +506,30 @@ def _open_stok_body(
         except Exception as e:
             info["aes_gcm_ok"] = False
             info["aes_error"] = str(e)
+    elif not mac_ok:
+        info["aes_gcm_ok"] = False
+        info["integrity_error"] = info.get("integrity_error") or "friction_mac_invalid"
+        # Decrypt may still be cryptographically possible, but OPEN is forbidden
+        # on the authenticated product path until friction integrity holds.
+        plaintext = None
+        decrypt_ok = False
 
-    legitimate = bool(decrypt_ok) and not force_failure
+    legitimate = bool(decrypt_ok) and not force_failure and mac_ok
+    # Re-MAC requires ss + integrity. Without it: read-only deny (do not mutate disk).
+    can_re_mac = bool(ss is not None and mac_ok)
+    can_persist_friction = bool(update_friction and can_re_mac)
 
     if not legitimate:
+        if not can_re_mac:
+            # Read-only deny: missing sk/ss (cannot re-MAC) or friction MAC integrity failure.
+            info["status"] = "DENIED"
+            info["recoverable"] = False
+            info["friction_state"] = dict(persisted)
+            info["friction_persisted"] = False
+            if not mac_ok:
+                info["integrity_error"] = info.get("integrity_error") or "friction_mac_invalid"
+            return None, info
+
         if _store is not None:
             def _mut(current):
                 base = merge_friction(persisted, current) or {}
@@ -503,14 +569,15 @@ def _open_stok_body(
         info["cumulative_iters"] = int(new_snap.get("cumulative_iters", 0) or 0)
         info["recoverable"] = False
 
-        # Persist castigated state FIRST, then hang if phase 3 / tier≥3
-        if update_friction:
+        # Persist castigated state FIRST, then hang if fail_count≥3 (phase 3).
+        if can_persist_friction:
             stok.friction_snapshot = new_snap
-            if ss is not None:
-                stok.friction_mac = friction_mac(ss, new_snap, stok.pk, stok.ct)
+            stok.friction_mac = friction_mac(ss, new_snap, stok.pk, stok.ct)
             write_stok(stok, path)
             if _store is not None:
                 _store.save(_store_id, new_snap)
+        else:
+            info["friction_persisted"] = False
 
         if trap_should_hang(new_snap) and hang_on:
             info["_hang"] = {
@@ -530,10 +597,9 @@ def _open_stok_body(
         info["status"] = "DENIED"
         info["recoverable"] = False
         info["friction_state"] = progressed
-        if update_friction:
+        if can_persist_friction:
             stok.friction_snapshot = progressed
-            if ss is not None:
-                stok.friction_mac = friction_mac(ss, progressed, stok.pk, stok.ct)
+            stok.friction_mac = friction_mac(ss, progressed, stok.pk, stok.ct)
             write_stok(stok, path)
             if _store is not None:
                 _store.save(_store_id, progressed)
@@ -551,10 +617,9 @@ def _open_stok_body(
     info["work_factor"] = 1
     info["recoverable"] = True
 
-    if update_friction:
+    if can_persist_friction:
         stok.friction_snapshot = cleared
-        if ss is not None:
-            stok.friction_mac = friction_mac(ss, cleared, stok.pk, stok.ct)
+        stok.friction_mac = friction_mac(ss, cleared, stok.pk, stok.ct)
         write_stok(stok, path)
         if _store is not None:
             _store.clear(_store_id)

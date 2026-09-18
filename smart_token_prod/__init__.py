@@ -9,7 +9,7 @@ from .sdk import (
     artifact_friction_status,
 )
 
-__version__ = "0.9.0"
+__version__ = "0.10.0"
 __all__ = [
     "SmartTokenProd",
     "PublicView",
