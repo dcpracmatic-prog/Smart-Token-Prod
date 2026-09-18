@@ -99,6 +99,23 @@ jobs:
         working-directory: cpp
         run: ./friction_demo
 
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cross-backend parity (native vs reference Python)
+        run: |
+          # tests/test_native_python_parity.py skips when libfriction.so is
+          # absent, so it is inert in the pure-Python job. This is the only job
+          # that builds the core, so without this step the v0.10.4 regression
+          # test would never actually execute anywhere.
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]" || pip install -e . pytest
+          cp cpp/libfriction.so smart_token_prod/libfriction.so
+          python -c "from smart_token_prod.native import is_available; assert is_available(), 'native core not loadable'"
+          python -m pytest tests/test_native_python_parity.py -v
+
   native-sanitizers:
     name: Native ASan/UBSan
     runs-on: ubuntu-latest
