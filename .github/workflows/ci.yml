@@ -102,7 +102,11 @@ jobs:
           test "$rc" -eq 1
 
       - name: Integration scaffolding dry-run
-        run: smart-token integrate /tmp/stp-host --dry-run
+        run: |
+          # run_integrate raises NotADirectoryError on a missing PROJECT_DIR,
+          # and the step never created one.
+          mkdir -p /tmp/stp-host
+          smart-token integrate /tmp/stp-host --dry-run
 
   native:
     name: Native friction core
