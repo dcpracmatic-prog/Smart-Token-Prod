@@ -1,0 +1,154 @@
+# CI — Smart Token Prod
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  SMART_TOKEN_PHASE3_HANG: "0"
+  SMART_TOKEN_ARGON2_TIME: "1"
+  SMART_TOKEN_ARGON2_MEM: "8192"
+  SMART_TOKEN_ARGON2_PARALLELISM: "1"
+
+jobs:
+  python:
+    name: Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.12"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package and test extras
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Unit tests
+        run: pytest tests/ -v --tb=short
+
+      - name: CLI doctor / version
+        run: |
+          smart-token version
+          smart-token doctor
+
+      - name: CLI smoke (protect / status / open)
+        run: |
+          printf 'stp-ci-payload\n' > /tmp/sample.bin
+          smart-token protect /tmp/sample.bin --master "ci-master-secret"
+          test -f /tmp/sample.bin.stok
+          test -f /tmp/sample.bin.stok.key
+          smart-token status /tmp/sample.bin.stok
+          smart-token open /tmp/sample.bin.stok \
+            --master "ci-master-secret" \
+            --key /tmp/sample.bin.stok.key \
+            -o /tmp/sample.out.bin
+          cmp /tmp/sample.bin /tmp/sample.out.bin
+          set +e
+          smart-token open /tmp/sample.bin.stok \
+            --master "wrong-secret" \
+            --key /tmp/sample.bin.stok.key
+          rc=$?
+          set -e
+          test "$rc" -eq 1
+
+      - name: Integration scaffolding dry-run
+        run: smart-token integrate /tmp/stp-host --dry-run
+
+  native:
+    name: Native friction core
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ make
+
+      - name: Build shared library and demo
+        working-directory: cpp
+        run: |
+          make clean || true
+          make
+          test -f libfriction.so
+          make demo || g++ -std=c++17 -O2 -Wall -Wextra -o friction_demo main_demo.cpp friction_core.cpp
+
+      - name: Run friction_demo
+        working-directory: cpp
+        run: ./friction_demo
+
+  native-sanitizers:
+    name: Native ASan/UBSan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install compilers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends g++ make
+
+      - name: Build instrumented demo
+        working-directory: cpp
+        run: |
+          make clean || true
+          make CXXFLAGS="-std=c++17 -O1 -Wall -Wextra -fPIC -fno-omit-frame-pointer -g -fsanitize=address,undefined" \
+               LDFLAGS="-fsanitize=address,undefined" demo || \
+          g++ -std=c++17 -O1 -Wall -Wextra -fno-omit-frame-pointer -g \
+              -fsanitize=address,undefined \
+              -o friction_demo main_demo.cpp friction_core.cpp
+
+      - name: Run friction_demo under sanitizers
+        working-directory: cpp
+        env:
+          ASAN_OPTIONS: abort_on_error=1:detect_leaks=1:symbolize=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ./friction_demo
+
+  adversarial:
+    name: Adversarial scripts
+    runs-on: ubuntu-latest
+    needs: [python]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run adversarial battery
+        env:
+          SMART_TOKEN_PHASE3_HANG: "0"
+        run: |
+          python scripts/adversarial_a1_mac_tamper.py
+          python scripts/adversarial_r1_inode_replace.py
+          python scripts/adversarial_r2_inmemory_oracle.py
+          python scripts/validate_full_flow.py
