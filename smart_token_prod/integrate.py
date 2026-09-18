@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 DEFAULT_GIT_DEP = (
     "smart-token-prod @ "
-    "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.3"
+    "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.4"
 )
 
 BRIDGE_TEMPLATE = '''\
@@ -54,7 +54,7 @@ Este archivo lo escribió `smart-token integrate`. Pasos recomendados:
 Instala el paquete desde git (o editable local):
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.3"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.4"
 # o editable:
 # pip install -e /ruta/a/Smart-Token-Prod
 ```

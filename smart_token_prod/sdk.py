@@ -42,7 +42,7 @@ def _require_stack() -> None:
             "Smart Token Prod stack unavailable — missing/broken deps: "
             + ", ".join(missing)
             + ". Install with: pip install 'smart-token-prod @ "
-            "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.3'"
+            "git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.4'"
         )
 
 
