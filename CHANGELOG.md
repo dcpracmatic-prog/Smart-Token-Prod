@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.10.3 — P0: rebind AAD to the on-disk `public_label`
+
+### P0 — tampered `public_label` decrypted cleanly with `status=OPEN`
+- **Bug:** the AEAD associated data is *derived* from `public_label`
+  (`public_label + b"|AAD|v2"`), but it was also **persisted** in the `.stok`
+  and `_open_stok_body` passed the persisted `stok.aad` straight to
+  `aes_gcm_decrypt`. Since both fields sit in the same untrusted header, an
+  attacker could rewrite `public_label` and leave `aad` untouched: the label and
+  the ciphertext were never actually bound, so the artifact opened cleanly with
+  `status=OPEN` and no integrity signal at all.
+  Found by the ATL Edge adversarial battery (case A11) while migrating from
+  0.4.5, whose now-removed `header_mac` had covered `public_label` explicitly.
+- **Fix:** `core.expected_aad(public_label)` is the single canonical derivation,
+  used by both the protect and the open path. `_open_stok_body` recomputes the
+  AAD from the on-disk `public_label` and passes the recomputed value to the
+  AEAD; the stored `aad` field is now descriptive only and never trusted. A
+  forged label therefore fails closed with `InvalidTag`. When the stored and
+  recomputed values disagree, `info["aad_rebound"] = True` is recorded for
+  forensics — the AEAD, not that flag, is what enforces the property.
+- **Compatibility:** none broken. The derivation is deterministic and unchanged,
+  so every untampered v1/v2 `.stok` recomputes to exactly the AAD it was sealed
+  with and opens as before. No format bump, no re-protect needed.
+- **Scope note:** `salt` / `material` are deliberately empty in v2 (coherence is
+  a public-view metric, not an authorization oracle, per v0.9). They are not
+  covered here and are not meant to be.
+
 ## v0.10.2 — Cycle-2 adversarial harden (inode write, opaque open, hang BP)
 
 ### P0 — R1 flock bypass via `.stok` unlink+recreate

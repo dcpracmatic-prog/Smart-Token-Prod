@@ -1,5 +1,5 @@
 """
-Suite de pruebas — Smart Token Prod v0.10.2
+Suite de pruebas — Smart Token Prod v0.10.3
 
 Producto:
   - Differentiator = trampa lógica secuencial (fases 1→2→3) persistida en .stok
@@ -1098,9 +1098,9 @@ def test_r3_hang_backpressure_skips_extra_grind(tmp_path):
     reset_hang_backpressure_for_tests()
 
 
-def test_version_is_0102():
+def test_version_is_0103():
     from smart_token_prod import __version__
-    assert __version__ == "0.10.2"
+    assert __version__ == "0.10.3"
 
 
 def test_r1_open_stok_inode_race_returns_opaque_denied(tmp_path):

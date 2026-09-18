@@ -312,6 +312,24 @@ class PublicView:
     coherence_window: float
     friction_level: int
 
+AAD_SUFFIX = b"|AAD|v2"
+
+
+def expected_aad(public_label: bytes) -> bytes:
+    """Canonical AEAD associated data for a .stok, derived from public_label.
+
+    The AAD is *derived*, never trusted from disk. It is written into the file
+    for readability and debugging only; every consumer must recompute it with
+    this function and pass the recomputed value to the AEAD. See the P0 note in
+    ``stok._open_stok_body``: using the stored ``aad`` verbatim let a tampered
+    ``public_label`` decrypt cleanly, because the label and the ciphertext were
+    no longer actually bound.
+    """
+    if not isinstance(public_label, (bytes, bytearray)):
+        raise TypeError("public_label must be bytes")
+    return bytes(public_label) + AAD_SUFFIX
+
+
 class SmartTokenProd:
     def __init__(
         self,
@@ -357,7 +375,7 @@ class SmartTokenProd:
 
         # AES-256-GCM bound to ss + master_km
         self.aes_key = derive_aes_key(self.shared_secret, master_km)
-        aad = public_label + b"|AAD|v2"
+        aad = expected_aad(public_label)
         self.nonce, self.ciphertext = aes_gcm_encrypt(self.aes_key, secret_payload, aad)
         self._aad = aad
 

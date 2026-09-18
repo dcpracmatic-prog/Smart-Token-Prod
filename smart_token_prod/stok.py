@@ -44,6 +44,7 @@ from .core import (
     BINDING_VERSION,
     public_info,
     OPAQUE_DENY_KEYS,
+    expected_aad,
 )
 from .recovery import (
     apply_failure_to_snapshot,
@@ -600,7 +601,18 @@ def _open_stok_body(
     if ss is not None and not force_failure and mac_ok:
         try:
             key = derive_aes_key(ss, master_km)
-            plaintext = aes_gcm_decrypt(key, stok.nonce, stok.ciphertext, stok.aad)
+            # P0: derive the AAD from the ON-DISK public_label; never trust the
+            # stored `aad` field. Passing stok.aad verbatim meant a tampered
+            # public_label decrypted cleanly with status=OPEN, because nothing
+            # actually bound the label to the ciphertext. Recomputing makes the
+            # binding cryptographic: forge the label and AES-GCM raises
+            # InvalidTag. Untampered artifacts are unaffected, so this is
+            # backward compatible with every v1/v2 .stok written so far.
+            rebound_aad = expected_aad(stok.public_label)
+            if rebound_aad != stok.aad:
+                # Recorded for forensics; the AEAD below is what enforces it.
+                info["aad_rebound"] = True
+            plaintext = aes_gcm_decrypt(key, stok.nonce, stok.ciphertext, rebound_aad)
             decrypt_ok = True
             info["aes_gcm_ok"] = True
         except Exception as e:

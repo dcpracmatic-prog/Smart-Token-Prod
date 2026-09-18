@@ -1,11 +1,11 @@
-# Smart Token Prod v0.10.2
+# Smart Token Prod v0.10.3
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.10.2** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.10.3** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -24,7 +24,7 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 11. **`sk` fuera de banda** — `.stok.key`
 12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate | repair-mac`
 
-## Contrato de producto (v0.10.2)
+## Contrato de producto (v0.10.3)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
@@ -60,6 +60,13 @@ Réplicas (mismo host / disco compartido):
 - **Integridad de fricción (v0.10):** `friction_mac` inválida → fail-closed (OPEN
   prohibido; no se acepta snapshot vacío; deuda en disco no se borra). Open sin
   `sk` no muta fricción (no se puede re-MAC).
+- **Ligadura del `public_label` (v0.10.3):** el AAD del AES-GCM se **deriva** de
+  `public_label` mediante `core.expected_aad()` y se **recalcula al abrir** desde
+  el campo en disco. El `aad` que viaja en el `.stok` es descriptivo y nunca se
+  confía. Falsificar `public_label` → `InvalidTag` → DENIED opaco. Hasta la
+  v0.10.2 se pasaba el `aad` almacenado al AEAD, así que la etiqueta y el
+  criptograma no estaban realmente ligados y un `public_label` manipulado abría
+  con `status=OPEN`.
 - **Garantía de producto** para trampa/ladder/hang: ruta autenticada
   `protect_file` / `open_stok` / `sdk.*` con fricción integrity-checked.
   Reimplementación offline con `sk`+master+fuente reduce a Argon2 (commodity);
@@ -76,7 +83,7 @@ En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
 instala el paquete y usa el scaffolding:
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.2"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.3"
 smart-token integrate /ruta/al/proyecto
 ```
 
@@ -124,7 +131,7 @@ smart-token demo   # la demo desactiva hang internamente
 # 3) Mismo .stok castigado + master correcto → ladder + OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.10.2)
+## Límites de esta versión (v0.10.3)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
@@ -143,7 +150,7 @@ Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
 
 ## Estado del artefacto (honestidad operativa)
 
-- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.2`); CLI `smart-token`.
+- Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.3`); CLI `smart-token`.
 - SDK (`smart_token_prod.sdk`) + `smart-token integrate` para consumidores externos.
 - Suite `tests/` y scripts bajo `scripts/` (replicas, flujo completo, costo de ataque).
 - `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como
