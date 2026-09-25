@@ -10,7 +10,7 @@ from .sdk import (
     repair_artifact_mac,
 )
 
-__version__ = "0.10.4"
+__version__ = "0.10.5"
 __all__ = [
     "SmartTokenProd",
     "PublicView",

@@ -19,7 +19,7 @@ def test_version_exits_zero(capsys):
     rc = main(["version"])
     assert rc == 0
     out = capsys.readouterr().out.strip()
-    assert out == "0.10.4"
+    assert out == "0.10.5"
 
 
 def test_doctor_exits_zero(capsys):
@@ -35,7 +35,7 @@ def test_print_dep_git(capsys):
     assert rc == 0
     out = capsys.readouterr().out
     assert "smart-token-prod @" in out
-    assert "Smart-Token-Prod.git@v0.10.4" in out
+    assert "Smart-Token-Prod.git@v0.10.5" in out
 
 
 def test_print_dep_editable(capsys, tmp_path):

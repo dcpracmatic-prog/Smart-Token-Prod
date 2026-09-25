@@ -1,13 +1,13 @@
 [![CI](https://github.com/dcpracmatic-prog/Smart-Token-Prod/actions/workflows/ci.yml/badge.svg)](https://github.com/dcpracmatic-prog/Smart-Token-Prod/actions/workflows/ci.yml)
 
-# Smart Token Prod v0.10.4
+# Smart Token Prod v0.10.5
 
 Token post-cuántico (ML-KEM-768 + AES-256-GCM) cuya **diferenciación** es la
 **trampa lógica secuencial persistente** (fases 1 → 2 → 3 en `.stok`),
 endurecida con Argon2id. Argon2+AES solos son commodity (“pan y leche”);
 aquí Argon2 **endurece la trampa**, no la reemplaza.
 
-Versión del paquete: **0.10.4** (`pyproject.toml` / `smart_token_prod.__version__`).
+Versión del paquete: **0.10.5** (`pyproject.toml` / `smart_token_prod.__version__`).
 Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 
 ## Qué entrega esta versión
@@ -20,13 +20,13 @@ Licencia vigente: **Elastic License 2.0** (`LICENSE.txt`).
 6. **Denegaciones opacas** — CLI `open` y API (`open_stok`/`open_artifact`) por
    defecto **no** anuncian tier, fail_count ni work_factor; dueño: `reveal_friction=True` o `status`
 7. **Phase 3 hang** — wrong master con `fail_count ≥ 3` → bucle bloqueante que **no retorna**
-8. **Validation ladder (v0.8.1)** — tras N fallos, OPEN pide N+1 masters correctos seguidos (tope 4)
-9. **FrictionStore compartido (v0.8.2)** — `FileFrictionStore` + flock / lock de `.stok`; réplicas en el mismo disco suman el mismo `fail_count`
+8. **Validation ladder (v0.8.1+)** — tras N fallos, OPEN exige N+1 validaciones **consecutivas de la misma clave correcta** (tope 4). Cualquier clave incorrecta intermedia resetea el contador de aciertos a cero; no se pueden acumular créditos parciales entre candidatas distintas.
+9. **Defensa autónoma (file-borne)** — `friction_snapshot` + `friction_mac` van **embebidos en el propio `.stok`**. El archivo se defiende solo; no requiere red ni configuración del operador. El FrictionStore compartido (`FileFrictionStore` / Redis) es refuerzo **opcional** solo para el escenario multi-host (réplicas que quieren compartir el mismo contador).
 10. **Núcleo C++** — `libfriction.so` + FFI opcional (`auto`/`native`/`python`)
 11. **`sk` fuera de banda** — `.stok.key`
 12. **CLI** — `smart-token protect | open | status | demo | version | doctor | print-dep | integrate | repair-mac`
 
-## Contrato de producto (v0.10.4)
+## Contrato de producto (v0.10.5)
 
 ```text
 Cada open() paga Argon2id + trabajo de trampa (bound a material de cifrado)
@@ -85,7 +85,7 @@ En lugar de copiar a `vendor/smart_token_prod/` (esa copia se queda vieja),
 instala el paquete y usa el scaffolding:
 
 ```bash
-pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.4"
+pip install "smart-token-prod @ git+https://github.com/dcpracmatic-prog/Smart-Token-Prod.git@v0.10.5"
 smart-token integrate /ruta/al/proyecto
 ```
 
@@ -133,20 +133,21 @@ smart-token demo   # la demo desactiva hang internamente
 # 3) Mismo .stok castigado + master correcto → ladder + OPEN + reset friction
 ```
 
-## Límites de esta versión (v0.10.4)
+## Límites de esta versión (v0.10.5)
 
 | Garantía | Fuera de alcance |
 |----------|------------------|
 | Confidencialidad ML-KEM + AES-GCM del payload | Canales laterales |
-| Trap + fail_count compartidos en el `.stok` (flock) y en `FileFrictionStore` | Réplicas en hosts distintos sin disco/Redis compartido |
+| Trap + fail_count **embebidos en el `.stok`** (file-borne; autónomo) + flock; FrictionStore compartido opcional | Réplicas en hosts distintos que quieran un único contador sin disco/Redis compartido |
 | Deuda de **cómputo / hang** viaja con el `.stok` si se copia *después* de fallar | Bloqueo de **copia limpia pre-ataque** |
 | `sk` en `.stok.key` | HSM/KMS cableado al flujo; Android / Termux |
 | Un master correcto siempre puede abrir (pagando el costo; ladder si hubo fallos) | “Destruir archivo tras N fallos” (**no**) |
 | Hang de fase 3 best-effort + tope process-local de hangs concurrentes | Hang a prueba de ptrace; **límite multi-proceso/cluster** (no existe) |
 | Binding v2 + MAC fail-closed + flock inode en open autenticado | **B1:** offline con `sk`+master+fuente salta la máquina oficial (dureza→Argon2); sin master no hay plaintext |
 
-**Resumen:** el valor de producto es la **máquina de estados de trampa**
-persistente + PQ crypto; Argon2 es el endurecimiento commodity de cada intento.
+**Resumen:** el valor de producto es la **máquina de estados de trampa autónoma**
+(file-borne en el `.stok`) + denegación opaca + PQ crypto; Argon2 endurece cada intento.
+El FrictionStore compartido es solo refuerzo multi-host opcional.
 
 Detalle en `THREAT_MODEL.md`. Historial en `CHANGELOG.md`.
 

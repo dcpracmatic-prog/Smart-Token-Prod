@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.10.5 — API boundary + pluggable artifact storage
+
+This release packages the Smart Token cryptographic core behind an authenticated HTTP API and adds a pluggable artifact-storage boundary suitable for local development and object storage deployments.
+
+### API boundary
+- Adds the FastAPI application under `api/main.py`, versioned as `0.10.5`.
+- Protected endpoints require `Authorization: Bearer <SMART_TOKEN_API_KEY>`.
+- Artifact protection/open operations additionally require `X-Smart-Token-Master`; the API layer does not persist the master secret.
+- Adds bounded upload handling through `SMART_TOKEN_MAX_UPLOAD_BYTES` (default 50 MiB).
+- Keeps open responses opaque on denial by calling the SDK with `reveal_friction=False`; friction inspection remains a separate authenticated endpoint.
+
+### Pluggable artifact storage
+- Adds `ArtifactStorage` with a local filesystem backend for development/single-host deployments.
+- Adds `S3ArtifactStorage` for S3-compatible object storage. Artifact objects are restricted to `artifact.stok` and `artifact.stok.key`.
+- S3 uploads request server-side AES-256 encryption (`ServerSideEncryption=AES256`).
+- S3-backed artifacts are materialized only temporarily for cryptographic operations and the temporary directory is cleaned afterward.
+- Storage selection is controlled by `SMART_TOKEN_STORAGE_BACKEND`, with `local` as the development default and `s3` available for production deployment.
+
+### Deployment/documentation alignment
+- `api/requirements.txt` pins the API dependency to `Smart-Token-Prod@v0.10.5`.
+- `api/README.md` documents the HTTP boundary and storage modes.
+- `api/.env.example` exposes the API key, upload limit, local storage, and S3 configuration variables.
+
+### Security scope
+- The cryptographic hardening from v0.10.0–v0.10.4 remains unchanged: fail-closed friction MAC handling, inode-bound locking, opaque denial behavior, local hang backpressure, AAD rebinding to `public_label`, and native/Python `mutate_key` parity.
+- v0.10.5 does not claim to eliminate the documented B1 offline reimplementation residual or host/process compromise risks.
+
 ## v0.10.4 — fix undefined behaviour in the native `mutate_key` (cross-backend parity)
 
 `SequentialTarpit::mutate_key` built the 16-byte big-endian encoding of

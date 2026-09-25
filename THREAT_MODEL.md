@@ -1,4 +1,4 @@
-# Modelo de amenazas — Smart Token Prod (v0.10.2)
+# Modelo de amenazas — Smart Token Prod (v0.10.5)
 
 Estado: **borrador técnico interno**. Esto NO sustituye una auditoría de
 seguridad independiente — es el punto de partida que un auditor necesitaría
@@ -6,7 +6,14 @@ para empezar a trabajar, y el mínimo que cualquier cliente serio va a pedir
 antes de confiar en el sistema.
 
 
-## 0. Contrato de integridad de fricción (v0.10.2)
+## 0. Contrato de integridad de fricción (v0.10.5)
+
+**Defensa base autónoma (file-borne):**  
+El `friction_snapshot` y el `friction_mac` viajan **dentro del propio archivo `.stok`**.  
+La trampa lógica (fases 1→2→3, ladder, hang) funciona sin red y sin configuración del operador.  
+El FrictionStore compartido (FileFrictionStore / Redis) es un refuerzo **opcional** exclusivo del escenario multi-host en el que varias réplicas desean compartir el mismo contador de fallos. En el caso normal (un archivo defendiéndose solo) no aplica ninguna “flojera del operador”: no hay nada que configurar para que la trampa esté activa.
+
+
 
 - La trampa lógica (fases / ladder / hang) en el path oficial
   (`open_stok` / SDK) solo opera sobre un `friction_snapshot` con

@@ -12,7 +12,7 @@ Uso:
   smart-token integrate PROJECT_DIR [--bridge PATH] [--editable PATH] [--dry-run]
   smart-token repair-mac archivo.stl.stok [--key archivo.stok.key]
 
-Contrato v0.10.4:
+Contrato v0.10.5:
   - Denegaciones OPAQUE (sin tier / fail_count / work_factor en stdout).
   - Tras phase 3 (fail_count≥3) + master incorrecto: open entra en bucle que no retorna.
   - status inspecciona el snapshot (herramienta del dueño, no oráculo de deny).
