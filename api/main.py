@@ -3,6 +3,7 @@ import os, secrets, tempfile
 from pathlib import Path
 from typing import Optional
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from smart_token_prod.sdk import artifact_friction_status, is_available, open_artifact, protect_artifact, status as sdk_status
 from .storage import ArtifactStorage, build_storage
@@ -10,6 +11,24 @@ APP_NAME="Smart Token API"
 API_KEY=os.getenv("SMART_TOKEN_API_KEY")
 MAX_UPLOAD_BYTES=int(os.getenv("SMART_TOKEN_MAX_UPLOAD_BYTES", str(50*1024*1024)))
 app=FastAPI(title=APP_NAME, version="0.10.5", docs_url="/docs", redoc_url="/redoc")
+
+# Browser clients (TDCP on Vercel / local dev). Override with SMART_TOKEN_CORS_ORIGINS (comma-separated).
+_cors_origins = [
+    o.strip()
+    for o in os.getenv(
+        "SMART_TOKEN_CORS_ORIGINS",
+        "https://tdcp.vercel.app,http://localhost:8080,http://127.0.0.1:8080",
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+    expose_headers=["X-Smart-Token-Status"],
+)
 storage: ArtifactStorage=build_storage()
 def require_api_key(authorization: Optional[str]=Header(default=None)) -> None:
     if not API_KEY: raise HTTPException(503,"API authentication is not configured")
