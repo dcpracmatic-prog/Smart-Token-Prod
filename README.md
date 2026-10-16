@@ -148,7 +148,7 @@ Detalle de migración, API SDK y ejemplos: [`docs/INTEGRATION.md`](docs/INTEGRAT
 | Confidencialidad ML-KEM + AES-GCM del payload | Canales laterales |
 | Trap + fail_count **embebidos en el `.stok`** (file-borne; autónomo) + flock; FrictionStore compartido opcional | Réplicas en hosts distintos que quieran un único contador sin disco/Redis compartido |
 | Deuda de cómputo / hang viaja con el `.stok` si se copia *después* de fallar | Bloqueo de copia limpia pre-ataque |
-| `sk` en `.stok.key` | HSM/KMS cableado al flujo principal; Android / Termux |
+| `sk` en `.stok.key` | HSM/KMS cableado al flujo principal por defecto; usario configura con sus servicios HSM/KMS (soberanía de la información)|
 | Un master correcto siempre puede abrir (pagando el costo; ladder si hubo fallos) | “Destruir archivo tras N fallos” (**no**) |
 | Hang de fase 3 best-effort + tope process-local | Hang a prueba de ptrace; límite multi-proceso/cluster (no existe) |
 | Binding v2 + MAC fail-closed + flock inode en open autenticado | **B1:** offline con `sk`+master+fuente puede omitir la máquina oficial (dureza → Argon2); sin master no hay plaintext |
