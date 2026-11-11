@@ -37,6 +37,13 @@ class LocalArtifactStorage(ArtifactStorage):
     def materialize(self,artifact_id:str)->Path:
         if not self.exists(artifact_id): raise FileNotFoundError(artifact_id)
         return self._dir(artifact_id)
+    def cleanup_materialized(self,path:Path)->None:
+        # Local backend: materialize() returns the live artifact directory
+        # (NOT a temp copy), so there is nothing to clean up. open_artifact
+        # writes friction state back into this directory in place; deleting
+        # it here would destroy the stored artifact after the first open
+        # (and after any friction inspection). Removal is delete()'s job.
+        return None
 class S3ArtifactStorage(ArtifactStorage):
     def __init__(self,bucket:str,prefix:str="smart-token/artifacts",endpoint_url:str|None=None):
         try: import boto3
