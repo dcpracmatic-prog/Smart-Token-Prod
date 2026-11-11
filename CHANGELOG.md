@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased — .stok corrupto → DENIED opaco (2026-11-11)
+
+- `read_stok` (`smart_token_prod/stok.py`) convierte cualquier fallo de parseo
+  (magic, longitud, UTF-8, JSON, base64, campos ausentes) en `CorruptStokError`
+  (subclase de `ValueError`) con un mensaje genérico, sin offset ni detalle.
+- `open_stok` traduce `CorruptStokError` a DENIED opaco (sin mutar el archivo
+  en disco): antes, un byte 0xcd en el offset 1974 del `.stok` mataba el CLI
+  con `UnicodeDecodeError` sin capturar (traceback, exit 1) y distinguía ese
+  caso de un DENIED. Verificado con el mismo caso + 5 variantes de corrupción
+  (magic, truncado, JSON roto, vacío, basura): todas DENIED, sin mutación.
+- Tests: 2 nuevos de regresión (`test_corrupt_stok_json_returns_opaque_denied`,
+  `test_cli_corrupt_stok_json_is_opaque_denied`); suite 71 → 73 tests.
+- Docs: README corrige el conteo (72 → 71 + 2 nuevos = 73; la cifra 72 de
+  RESULT.md no se reproduce en re-conteo, ver nota en RESULT.md) y documenta
+  el overhead medido (109 B → .stok 3.941 B; 100.000 B → +37,1%).
+
 ## v0.10.5 — API boundary + pluggable artifact storage
 
 This release packages the Smart Token cryptographic core behind an authenticated HTTP API and adds a pluggable artifact-storage boundary suitable for local development and object storage deployments.
