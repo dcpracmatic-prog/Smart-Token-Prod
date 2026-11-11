@@ -508,6 +508,74 @@ def test_cli_denied_is_opaque(tmp_path, capsys):
     assert "Coherencia" not in out
 
 
+def test_corrupt_stok_json_returns_opaque_denied(tmp_path):
+    """Un .stok con el JSON roto (UTF-8 inválido) debe dar DENIED opaco, no traceback.
+
+    Regresión del defecto medido 2026-11-11: byte 0xcd en offset 1974 hacía
+    morir el CLI con UnicodeDecodeError sin capturar. El archivo sigue sin
+    abrirse (fail-closed) y no se muta en disco.
+    """
+    import pytest as _pytest
+
+    from smart_token_prod.stok import open_stok, protect_file, read_stok, CorruptStokError
+
+    sample = tmp_path / "corrupt.stl"
+    sample.write_bytes(b"payload-corrupto")
+    master = b"corrupt-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", tarpit_seconds=0.0, friction_backend="python"
+    )
+    data = bytearray(stok_path.read_bytes())
+    assert len(data) > 1974
+    data[1974] = 0xCD
+    stok_path.write_bytes(bytes(data))
+    before = stok_path.read_bytes()
+
+    with _pytest.raises(CorruptStokError):
+        read_stok(stok_path)
+
+    pt, info = open_stok(stok_path, master_secret=master, key_path=key_path)
+    assert pt is None
+    assert info.get("status") == "DENIED"
+    # Opacidad: la respuesta pública no distingue este caso de otro DENIED.
+    assert "fail_count" not in info
+    assert "friction_state" not in info
+    assert "UnicodeDecodeError" not in str(info)
+    assert stok_path.read_bytes() == before  # sin mutación en disco
+
+
+def test_cli_corrupt_stok_json_is_opaque_denied(tmp_path, capsys):
+    """CLI open sobre .stok con JSON roto: DENIED, exit 1, sin traceback."""
+    from smart_token_prod.stok import protect_file
+    from smart_token_prod.cli import main
+
+    sample = tmp_path / "cli-corrupt.stl"
+    sample.write_bytes(b"cli-payload-corrupto")
+    master = b"cli-master"
+    stok_path, key_path = protect_file(
+        sample, master_secret=master, tarpit_mode="off", tarpit_seconds=0.0, friction_backend="python"
+    )
+    data = bytearray(stok_path.read_bytes())
+    data[1974] = 0xCD
+    stok_path.write_bytes(bytes(data))
+    out_path = tmp_path / "recuperado.out"
+
+    rc = main([
+        "open", str(stok_path),
+        "--master", "cli-master",
+        "--key", str(key_path),
+        "--out", str(out_path),
+        "--backend", "python",
+        "--tarpit-mode", "off",
+    ])
+    assert rc == 1
+    captured = capsys.readouterr()
+    assert "DENIED" in captured.out
+    assert "Traceback" not in captured.out + captured.err
+    assert "UnicodeDecodeError" not in captured.out + captured.err
+    assert not out_path.exists()
+
+
 def test_work_factor_helpers_unit():
     from smart_token_prod.recovery import (
         apply_failure_to_snapshot,

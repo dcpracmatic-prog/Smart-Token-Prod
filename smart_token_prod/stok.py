@@ -19,6 +19,7 @@ material que permita decapsular sin la clave de custodia.
 from __future__ import annotations
 
 import base64
+import binascii
 import os
 import hashlib
 import hmac
@@ -70,6 +71,30 @@ MAGIC = b"STOK"
 VERSION = 2
 KEY_MAGIC = b"STKEY"
 KEY_VERSION = 1
+
+
+class CorruptStokError(ValueError):
+    """El archivo .stok no se puede parsear (magic, longitud, UTF-8, JSON o base64).
+
+    Subclase de ValueError para no romper a quien ya capturaba ValueError.
+    El mensaje es deliberadamente genérico: nunca incluye el offset, el byte
+    ni el motivo concreto, para que un .stok corrupto no se distinga de
+    cualquier otro DENIED opaco en el path de apertura.
+    """
+
+
+def _parse_stok_bytes(data: bytes, path: Path) -> "StokFile":
+    if len(data) < 9 or data[:4] != MAGIC:
+        raise CorruptStokError("Archivo .stok corrupto o no legible")
+    version = data[4]
+    if version not in (1, 2, VERSION):
+        raise CorruptStokError("Archivo .stok corrupto o no legible")
+    (body_len,) = struct.unpack(">I", data[5:9])
+    body = data[9 : 9 + body_len]
+    if len(body) != body_len:
+        raise CorruptStokError("Archivo .stok corrupto o no legible")
+    d = json.loads(body.decode("utf-8"))
+    return StokFile.from_dict(d)
 
 
 class StokLock:
@@ -375,22 +400,25 @@ def write_stok(stok: StokFile, path: str | Path, *, lock: Optional["StokLock"] =
 
 
 def read_stok(path: str | Path, *, lock: Optional["StokLock"] = None) -> StokFile:
+    """Lee y parsea un .stok.
+
+    Cualquier fallo de parseo (magic, longitud, UTF-8, JSON, base64 o campos
+    ausentes/mal formados) se convierte en CorruptStokError con un mensaje
+    genérico, sin offset ni detalle. El path de apertura (open_stok) lo
+    traduce a DENIED opaco; las herramientas del dueño (status, repair-mac)
+    siguen viendo el error sin traceback de parseo interno.
+    """
     path = Path(path)
     if lock is not None:
         data = lock.read_all()
     else:
         data = path.read_bytes()
-    if len(data) < 9 or data[:4] != MAGIC:
-        raise ValueError(f"Archivo no es un .stok válido (magic incorrecto): {path}")
-    version = data[4]
-    if version not in (1, 2, VERSION):
-        raise ValueError(f"Versión de .stok no soportada: {version} (esperada 1 o {VERSION})")
-    (body_len,) = struct.unpack(">I", data[5:9])
-    body = data[9 : 9 + body_len]
-    if len(body) != body_len:
-        raise ValueError("Longitud del bloque JSON inconsistente")
-    d = json.loads(body.decode("utf-8"))
-    return StokFile.from_dict(d)
+    try:
+        return _parse_stok_bytes(data, path)
+    except CorruptStokError:
+        raise
+    except (ValueError, struct.error, binascii.Error, KeyError, TypeError) as e:
+        raise CorruptStokError("Archivo .stok corrupto o no legible") from e
 
 
 def _rehydrate_tarpit(stok: StokFile, shared_secret: bytes):
@@ -458,6 +486,18 @@ def open_stok(
                 hang_after_holder=None,
                 lock=lock,
             )
+    except CorruptStokError:
+        # .stok que no se puede parsear (UTF-8/JSON/base64/magic/longitud):
+        # fail-closed con DENIED opaco, sin distinguirlo de cualquier otro
+        # DENIED. Sin mutación en disco (no hay snapshot íntegro que re-MAC).
+        # El detalle interno solo se ve con reveal_friction=True (dueño).
+        info = {
+            "path": str(path),
+            "status": "DENIED",
+            "binding_version": BINDING_VERSION,
+            "integrity_error": "stok_unreadable",
+        }
+        return None, _public_info(info, reveal_friction=reveal_friction)
     except RuntimeError as e:
         # Inode replace / unlink under lock → fail-closed DENIED (no oracle, no crash).
         msg = str(e).lower()
