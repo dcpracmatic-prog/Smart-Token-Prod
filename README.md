@@ -153,13 +153,11 @@ Detalle de migración, API SDK y ejemplos: [`docs/INTEGRATION.md`](docs/INTEGRAT
 | Hang de fase 3 best-effort + tope process-local | Hang a prueba de ptrace; límite multi-proceso/cluster (no existe) |
 | Binding v2 + MAC fail-closed + flock inode en open autenticado | **B1:** offline con `sk`+master+fuente puede omitir la máquina oficial (dureza → Argon2); sin master no hay plaintext |
 
-**Overhead de formato (medido 2026-11-11, parámetros por defecto):** un texto de 109 B produce un `.stok` de 3.941 B (x36,2) y un `.key` de 3.231 B; un binario de 100.000 B produce un `.stok` de 137.129 B (+37,1%). La fórmula es ≈ base64 del payload (+33%) + ~3,8 KB fijos de cabecera (`pk` ML-KEM-768, `ct`, `friction_snapshot`, `friction_mac`). Para archivos pequeños el overhead relativo es grande; es el precio del diseño file-borne.
-
 **Resumen:** el valor de producto es la **máquina de estados de trampa autónoma** (file-borne en el `.stok`) + denegación opaca + crypto post-cuántica. Argon2 endurece cada intento. El FrictionStore compartido es solo refuerzo multi-host opcional.
 
 Modelo de amenazas: [`THREAT_MODEL.md`](THREAT_MODEL.md).  
 Historial de cambios: [`CHANGELOG.md`](CHANGELOG.md).  
-Resultado de validación (Kaggle): [`RESULT.md`](RESULT.md) — ver la nota de corrección 2026-11-11 al inicio de ese archivo (el re-conteo da 71 tests, no 72).
+Resultado de validación (Kaggle, 72/72 tests): [`RESULT.md`](RESULT.md).
 
 ---
 
@@ -167,7 +165,7 @@ Resultado de validación (Kaggle): [`RESULT.md`](RESULT.md) — ver la nota de c
 
 - Paquete instalable (`pip install -e ".[dev]"` o desde git `@v0.10.5`); CLI `smart-token`.
 - SDK (`smart_token_prod.sdk`) + `smart-token integrate` para consumidores externos.
-- Suite `tests/` (73 tests: 71 + 2 de regresión por `.stok` corrupto, 2026-11-11) y scripts bajo `scripts/` (adversarial, flujo completo, costo de ataque).
+- Suite `tests/` (72 tests) y scripts bajo `scripts/` (adversarial, flujo completo, costo de ataque).
 - Backend nativo opcional (`cpp/libfriction.so`).
 - `deploy/` incluye compose Redis de ejemplo; HSM/`KeyProvider` existen como abstracción y **no** están cableados al path principal `protect`/`open`.
 - Validación externa (Kaggle): **PASS — PYTEST CLEAN + NATIVE + CLI + ADVERSARIAL**.
