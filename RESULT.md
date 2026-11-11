@@ -1,5 +1,16 @@
 # Resultado de validación — Smart Token Prod v0.10.5
 
+> **Corrección 2026-11-11 (no se borra el registro original, que sigue abajo intacto):**
+> el re-conteo independiente en este mismo checkout (commit `7dcd6eb`,
+> `pytest tests/ --collect-only`: **71 tests**; por archivo 6 + 11 + 7 + 47;
+> segunda definición: 63 funciones `def test` + 8 expansiones parametrizadas = 71)
+> **no reproduce el 72** que se afirma abajo. `tests/` no cambió desde esta
+> validación (el commit `db677d2` del 2026-09-25 solo tocó 4 líneas de
+> aserciones de versión), así que el 72 no se explica por un test eliminado;
+> queda como cifra **no reproducida** de la corrida Kaggle 2026-09-25. Tras el
+> parche del `.stok` corrupto (DENIED opaco, ver CHANGELOG "Unreleased") la
+> suite es de **73 tests** (71 + 2 nuevos de regresión).
+
 **Fecha de validación:** 2026-09-25  
 **Entorno:** Kaggle (Python 3.12.13, Linux x86_64)  
 **Artefacto validado:** `Smart-Token-Prod-v0.10.5-final` (copia escribible + parche de aserciones de versión 0.10.4 → 0.10.5 en tests)
